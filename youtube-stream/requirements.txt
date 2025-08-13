@@ -1,0 +1,4 @@
+opencv-python
+vidgear
+flask
+Pillow

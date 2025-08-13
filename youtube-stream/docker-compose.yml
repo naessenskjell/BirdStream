@@ -1,0 +1,12 @@
+version: '3'
+services:
+  stream-processor:
+    build: .
+    container_name: stream-processor
+    network_mode: host
+    environment:
+      - YOUTUBE_STREAM_KEY=${YOUTUBE_STREAM_KEY}
+      - RTSP_URL=rtsp://192.168.0.22:8554/cam
+    volumes:
+      - ./overlays:/app/overlays
+    restart: unless-stopped

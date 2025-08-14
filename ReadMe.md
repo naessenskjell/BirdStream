@@ -222,6 +222,7 @@ Basic setup on the server:
 
 ```sh
 cd youtube-stream
+docker-compose build
 docker-compose up -d
 ```
 
@@ -236,11 +237,14 @@ docker-compose up -d
 - Logs and status can be checked with:
 
 ```sh
-docker-compose logs -f
+docker logs stream-processor
 ```
 
-- To update configuration or hold screens, edit the files and restart the container:
+- To update configuration, edit the files and restart the container:
 
 ```sh
-docker-compose restart
+docker stop stream-processor
+docker rm stream-processor
+docker-compose build
+docker-compose up -d
 ```

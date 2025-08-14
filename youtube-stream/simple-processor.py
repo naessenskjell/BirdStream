@@ -86,8 +86,8 @@ INDEX_HTML = """
 			margin-bottom: 18px;
 		}
 		.secondary-actions {
-			display: flex;
-			justify-content: center;
+			display: grid;
+			grid-template-columns: 1fr 1fr;
 			gap: 12px;
 			margin-bottom: 18px;
 		}

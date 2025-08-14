@@ -186,4 +186,61 @@ sudo systemctl enable ffmpeg-rtsp
 sudo systemctl start ffmpeg-rtsp
 ```
 
-Now, clients can connect to `rtsp://<raspberrypi-ip>:8554/cam` via MediaMTX.
+### Example command for mono microphone
+
+If your microphone only supports mono, use this command (with increased volume):
+
+```sh
+rpicam-vid -t 0 --inline --width 1920 --height 1080 --framerate 30 -o - | \
+ffmpeg -thread_queue_size 512 -re -i - \
+  -f alsa -sample_fmt s16 -channels 1 -ar 44100 -i hw:1,0 \
+  -af "volume=2.0" \
+  -c:v copy -c:a aac -ar 44100 -b:a 128k -ac 1 \
+  -f rtsp rtsp://localhost:8554/stream
+```
+
+If you change the ffmpeg command, update your systemd service:
+
+```ini
+ExecStart=/bin/bash -c 'rpicam-vid -t 0 --inline --width 1920 --height 1080 --framerate 30 -o - | ffmpeg -thread_queue_size 512 -re -i - -f alsa -sample_fmt s16 -channels 1 -ar 44100 -i hw:1,0 -af "volume=2.0" -c:v copy -c:a aac -ar 44100 -b:a 128k -f rtsp rtsp://localhost:8554/stream'
+```
+
+If you still see errors, double-check device number with `arecord -l` and confirm no other process is using the mic.
+
+---
+
+## Stream processing
+
+Basic setup on the server:
+
+- Place the `youtube-stream` folder on your server.
+- Launch the Docker container using `docker-compose` from inside the `youtube-stream` folder.
+- This will run the Python script that redirects the RTSP stream to YouTube.
+- The webserver in the container can serve hold screens, which are shown on YouTube when the main stream is not active.
+
+**To start the container:**
+
+```sh
+cd youtube-stream
+docker-compose up -d
+```
+
+### More details on youtube-stream setup
+
+- The Python script (`main.py`) inside the container monitors the RTSP stream and relays it to YouTube using ffmpeg.
+- If the RTSP stream is unavailable, the script switches to a hold screen (static image or video) served from the webserver.
+- You can customize hold screens by replacing files in the `hold_screens` directory inside `youtube-stream`.
+- Configuration (such as YouTube stream key, RTSP source, and hold screen paths) is set in the `config.yaml` file.
+- The Docker Compose file (`docker-compose.yml`) defines the service and mounts necessary volumes for configuration and hold screens.
+- Custom hold screen images and new stream keys can be added dynamically through the webserver (that runs on port 3000).
+- Logs and status can be checked with:
+
+```sh
+docker-compose logs -f
+```
+
+- To update configuration or hold screens, edit the files and restart the container:
+
+```sh
+docker-compose restart
+```

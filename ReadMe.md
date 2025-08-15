@@ -6,15 +6,56 @@
 - Camera Module 3 Wide
 - Power supply, fan, ...
 
-## Video Streaming
+## Main Streaming Workflow: Separate Video and Audio RTSP Streams
 
-You can stream the camera feed via RTSP using `rpicam-vid` and `ffmpeg`, with MediaMTX as the RTSP server. This works for both silent and real audio.
+For robust and flexible streaming, transmit video and audio as separate RTSP streams and combine them into a unified stream for downstream processing or viewing.
+
+### 1. Stream Video Only
+
+```sh
+rpicam-vid -t 0 --inline --width 1920 --height 1080 --framerate 30 -o - \
+| ffmpeg -nostdin -thread_queue_size 512 -fflags +genpts -re -i - \
+  -c:v copy -an \
+  -f rtsp rtsp://localhost:8554/video
+```
+
+- `-an`: disables audio in the video stream.
+
+### 2. Stream Audio Only
+
+```sh
+ffmpeg -nostdin -f alsa -channels 1 -ar 44100 -i hw:1,0 \
+  -af "volume=2.0" \
+  -c:a aac -ar 44100 -b:a 128k \
+  -vn \
+  -f rtsp rtsp://localhost:8554/audio
+```
+
+- `-vn`: disables video in the audio stream.
+
+### 3. Combine Video and Audio Streams
+
+Use ffmpeg to merge the separate RTSP streams into a single stream for clients or further processing:
+
+```sh
+ffmpeg -i rtsp://localhost:8554/video -i rtsp://localhost:8554/audio \
+  -c:v copy -c:a copy \
+  -f rtsp rtsp://localhost:8554/stream
+```
+
+- This unified stream can be relayed by MediaMTX or consumed by downstream services.
+
+**Why separate streams?**
+
+- Isolates video and audio pipelines for easier troubleshooting and flexibility.
+- Allows independent restarts and monitoring.
+- Can help avoid audio dropouts or sync issues caused by hardware or software bugs.
 
 ---
 
 ## Setting up MediaMTX
 
-MediaMTX acts as a robust RTSP server to relay your stream to clients.
+MediaMTX acts as a robust RTSP server to relay your streams to clients.
 
 ### 1. Install MediaMTX
 
@@ -33,6 +74,8 @@ paths:
   cam:
     source: rtsp://localhost:8554/stream
 ```
+
+`cam` combines `video` and `audio` as a single stream.
 
 ### 3. Start MediaMTX
 
@@ -74,54 +117,19 @@ sudo systemctl start mediamtx
 
 ---
 
-## Streaming with Silent Audio
+## Autostarting ffmpeg Streams with systemd
 
-Some players require an audio track in the RTSP stream. If you do not have a microphone connected, you can add a silent audio track using `ffmpeg` and `rpicam-vid`.
+To automatically start the separate video, audio, and combined streams on boot, create the following systemd service files.
 
-### 1. Install ffmpeg and rpicam-apps
-
-```sh
-sudo apt update
-sudo apt install ffmpeg
-sudo apt install rpicam-apps
-```
-
-### 2. Start Streaming with Silent Audio
-
-Use `rpicam-vid` to capture video and pipe it to `ffmpeg`, which adds a silent audio track and streams to MediaMTX:
-
-```sh
-rpicam-vid -t 0 --inline --width 1920 --height 1080 --framerate 30 -o - \
-| ffmpeg -thread_queue_size 512 -re -i - \
--f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100 \
--c:v copy -c:a aac -ar 44100 -b:a 128k \
--f rtsp rtsp://localhost:8554/stream
-```
-
-- `rpicam-vid ... -o -`: Capture H.264 video from the Pi camera and output to stdout.
-- `ffmpeg -re -i -`: Read video from stdin.
-- `-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100`: Generate silent audio.
-- `-c:v copy`: Copy video without re-encoding.
-- `-c:a aac -ar 44100 -b:a 128k`: Encode audio as AAC.
-- `-f rtsp rtsp://localhost:8554/stream`: ffmpeg serves RTSP to MediaMTX.
-
-### 3. Autostart the ffmpeg/rpicam-vid Stream
-
-To ensure the stream starts automatically on boot, create a systemd service:
-
-```sh
-sudo nano /etc/systemd/system/ffmpeg-rtsp.service
-```
-
-Use the following service file:
+### 1. Video Stream Service
 
 ```ini
 [Unit]
-Description=FFmpeg RTSP Stream with Silent Audio (rpicam-vid)
+Description=FFmpeg RTSP Video Stream
 After=network.target
 
 [Service]
-ExecStart=/bin/bash -c 'rpicam-vid -t 0 --inline --width 1920 --height 1080 --framerate 30 -o - | ffmpeg -thread_queue_size 512 -re -i - -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100 -c:v copy -c:a aac -ar 44100 -b:a 128k -f rtsp rtsp://localhost:8554/stream'
+ExecStart=/bin/bash -c 'rpicam-vid -t 0 --inline --width 1920 --height 1080 --framerate 30 -o - | ffmpeg -nostdin -thread_queue_size 512 -fflags +genpts -re -i - -c:v copy -an -f rtsp rtsp://localhost:8554/video'
 Restart=always
 RestartSec=5
 User=admin
@@ -130,79 +138,56 @@ User=admin
 WantedBy=multi-user.target
 ```
 
-Enable and start the service:
+Save as `/etc/systemd/system/ffmpeg-video.service`.
 
-```sh
-sudo systemctl enable ffmpeg-rtsp
-sudo systemctl start ffmpeg-rtsp
-```
-
----
-
-## Streaming with a Connected Microphone
-
-If you connect a microphone to your Raspberry Pi, you can stream both video and real audio.
-
-### 1. List Audio Devices
-
-```sh
-arecord -l
-```
-
-Look for your microphone's card and device number.
-
-### 2. Start Streaming with Real Audio
-
-Replace `hw:1,0` with your actual device if different:
-
-```sh
-rpicam-vid -t 0 --inline --width 1920 --height 1080 --framerate 30 -o - | \
-ffmpeg -thread_queue_size 512 -re -i - \
-  -f alsa -i hw:1,0 \
-  -c:v copy -c:a aac -ar 44100 -b:a 128k \
-  -f rtsp rtsp://localhost:8554/stream
-```
-
-- `-f alsa -i hw:1,0`: Capture audio from the microphone.
-
-### 3. Autostart the ffmpeg/rpicam-vid Stream with Microphone
-
-If you are using a microphone, update the service file:
-
-```sh
-sudo nano /etc/systemd/system/ffmpeg-rtsp.service
-```
-
-Replace the `ExecStart` line with:
+### 2. Audio Stream Service
 
 ```ini
-ExecStart=/bin/bash -c 'rpicam-vid -t 0 --inline --width 1920 --height 1080 --framerate 30 -o - | ffmpeg -thread_queue_size 512 -re -i - -f alsa -i hw:1,0 -c:v copy -c:a aac -ar 44100 -b:a 128k -f rtsp rtsp://localhost:8554/stream'
+[Unit]
+Description=FFmpeg RTSP Audio Stream
+After=network.target
+
+[Service]
+ExecStart=/bin/bash -c 'ffmpeg -nostdin -f alsa -channels 1 -ar 44100 -i hw:1,0 -af "volume=2.0" -c:a aac -ar 44100 -b:a 128k -vn -f rtsp rtsp://localhost:8554/audio'
+Restart=always
+RestartSec=5
+User=admin
+
+[Install]
+WantedBy=multi-user.target
 ```
 
-Enable and start the service (if not already done):
+Save as `/etc/systemd/system/ffmpeg-audio.service`.
 
-```sh
-sudo systemctl enable ffmpeg-rtsp
-sudo systemctl start ffmpeg-rtsp
-```
-
-### Example command for mono microphone
-
-If your microphone only supports mono, use this command to convert to stereo (with increased volume):
-
-```sh
-rpicam-vid -t 0 --inline --width 1920 --height 1080 --framerate 30 -o - | \
-ffmpeg -thread_queue_size 512 -re -i - \
-  -f alsa -sample_fmt s16 -channels 1 -ar 44100 -i hw:1,0 \
-  -af "volume=2.0" \
-  -c:v copy -c:a aac -ar 44100 -b:a 128k -ac 2 \
-  -f rtsp rtsp://localhost:8554/stream
-```
-
-If you change the ffmpeg command, update your systemd service:
+### 3. Combined Stream Service
 
 ```ini
-ExecStart=/bin/bash -c 'rpicam-vid -t 0 --inline --width 1920 --height 1080 --framerate 30 -o - | ffmpeg -thread_queue_size 512 -re -i - -f alsa -sample_fmt s16 -channels 1 -ar 44100 -i hw:1,0 -af "volume=2.0" -c:v copy -c:a aac -ar 44100 -b:a 128k -ac 2 -f rtsp rtsp://localhost:8554/stream'
+[Unit]
+Description=FFmpeg RTSP Combined Stream (Video + Audio)
+After=network.target
+
+[Service]
+ExecStart=/bin/bash -c 'ffmpeg -i rtsp://localhost:8554/video -i rtsp://localhost:8554/audio -c:v copy -c:a copy -f rtsp rtsp://localhost:8554/stream'
+Restart=always
+RestartSec=5
+User=admin
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Save as `/etc/systemd/system/ffmpeg-combined.service`.
+
+### Enable and Start Services
+
+```sh
+sudo systemctl enable ffmpeg-video
+sudo systemctl enable ffmpeg-audio
+sudo systemctl enable ffmpeg-combined
+
+sudo systemctl start ffmpeg-video
+sudo systemctl start ffmpeg-audio
+sudo systemctl start ffmpeg-combined
 ```
 
 ---
@@ -246,3 +231,24 @@ docker rm stream-processor
 docker-compose build
 docker-compose up -d
 ```
+
+## Troubleshooting: Mono Microphone Audio Dropouts
+
+If your audio stream works on boot but drops out after some time:
+
+- **Test microphone stability:**  
+  Run `arecord -D hw:1,0 -f S16_LE -c1 -r 44100 test.wav` and play back with `aplay test.wav` to check if the device disconnects or fails.
+- **Check system logs:**  
+  Run `journalctl -u ffmpeg-rtsp` and `dmesg` for hardware or ALSA errors.
+- **Try a different USB port or power supply** for the microphone.
+- **Update Raspberry Pi OS and firmware:**  
+  `sudo apt update && sudo apt upgrade && sudo rpi-update`
+- **Try a different microphone** to rule out hardware issues.
+- **Increase ALSA buffer size:**  
+  Add `-buffer_size 512k` to the ffmpeg ALSA input if supported.
+- **Restart the service:**  
+  `sudo systemctl restart ffmpeg-rtsp`
+- **Check for suspend/power-saving:**  
+  Disable USB autosuspend if needed.
+
+If issues persist, consider using a USB sound card or a different microphone model.

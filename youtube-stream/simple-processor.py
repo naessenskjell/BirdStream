@@ -8,6 +8,7 @@ from werkzeug.utils import secure_filename
 # --- Configuration ---
 HOLD_IMAGE = '/app/overlays/hold_screen.png'
 BREAK_IMAGE = '/app/overlays/temporary_break.png'
+RECONNECT_IMAGE = '/app/overlays/reconnecting_screen.png'
 RTSP_URL = os.getenv('RTSP_URL', 'rtsp://192.168.0.22:8554/cam')
 WIDTH, HEIGHT, FPS = 1920, 1080, 30
 UPLOAD_FOLDER = '/app/overlays'
@@ -193,6 +194,7 @@ INDEX_HTML = """
 		<div class="secondary-actions">
 			<button onclick="sendState('hold')">Wachtscherm</button>
 			<button onclick="sendState('custom')">Custom Afbeelding</button>
+			<button onclick="sendState('reconnecting')">Reconnect Scherm</button>
 			<button onclick="sendState('stopped')">Stop Stream</button>
 		</div>
         
@@ -295,10 +297,10 @@ def upload_image():
 
 @app.route('/set_state', methods=['POST'])
 def set_state():
-	# Change the stream state (hold/break/live/stopped/custom)
+	# Change the stream state (hold/break/live/stopped/custom/reconnecting)
 	data = request.get_json()
 	state = data.get('state')
-	if state in ['hold', 'break', 'live', 'stopped', 'custom']:
+	if state in ['hold', 'break', 'live', 'stopped', 'custom', 'reconnecting']:
 		with state_lock:
 			global current_state
 			current_state = state
@@ -380,6 +382,30 @@ def ffmpeg_cmd_for_state(state):
 			'-f', 'flv',
 			youtube_url
 		]
+	elif state == 'reconnecting':
+		img = RECONNECT_IMAGE
+		return [
+			'ffmpeg',
+			'-loop', '1',
+			'-re',
+			'-i', img,
+			'-f', 'lavfi',
+			'-t', '3600',
+			'-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
+			'-vf', f'scale={WIDTH}:{HEIGHT},format=yuv420p',
+			'-r', str(FPS),
+			'-c:v', 'libx264',
+			'-preset', 'veryfast',
+			'-b:v', '8000k',
+			'-bufsize', '512k',
+			'-pix_fmt', 'yuv420p',
+			'-c:a', 'aac',
+			'-ar', '44100',
+			'-b:a', '128k',
+			'-shortest',
+			'-f', 'flv',
+			youtube_url
+		]
 	else:
 		img = HOLD_IMAGE if state == 'hold' else BREAK_IMAGE
 		return [
@@ -414,17 +440,103 @@ def start_ffmpeg(state):
 	print('Starting ffmpeg:', ' '.join(cmd))
 	return subprocess.Popen(cmd)
 
+def try_rtsp_connection():
+	# Try to open RTSP stream for a short time to check if it's available
+	try:
+		test_cmd = [
+			'ffmpeg',
+			'-rtsp_transport', 'tcp',
+			'-t', '2',
+			'-i', RTSP_URL,
+			'-f', 'null',
+			'-'
+		]
+		result = subprocess.run(test_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+		return result.returncode == 0
+	except Exception:
+		return False
+
 def main_loop():
 	global current_state
 	ffmpeg_proc = None
 	last_state = None
 	last_key = None
+	reconnect_attempt_interval = 5  # seconds between reconnect attempts
+	last_reconnect_attempt = 0
+	live_check_interval = 2  # seconds between RTSP checks in live mode
+	last_live_check = 0
 	try:
 		while True:
 			with state_lock:
 				state = current_state
 			with youtube_key_lock:
 				key = youtube_key
+
+			# Proactively check RTSP connection in live mode
+			if state == 'live':
+				now = time.time()
+				if now - last_live_check > live_check_interval:
+					last_live_check = now
+					if not try_rtsp_connection():
+						print('RTSP connection lost during live, switching to reconnecting.')
+						with state_lock:
+							current_state = 'reconnecting'
+						state = 'reconnecting'
+						# Stop live ffmpeg and start reconnecting overlay
+						if ffmpeg_proc:
+							ffmpeg_proc.terminate()
+							try:
+								ffmpeg_proc.wait(timeout=5)
+							except subprocess.TimeoutExpired:
+								ffmpeg_proc.kill()
+							ffmpeg_proc = None
+						ffmpeg_proc = start_ffmpeg('reconnecting')
+						last_state = 'reconnecting'
+						last_key = key
+						time.sleep(1)
+						continue
+
+			# If in reconnecting state, only try to reconnect periodically
+			if state == 'reconnecting':
+				now = time.time()
+				# Only try to reconnect every interval
+				if now - last_reconnect_attempt > reconnect_attempt_interval:
+					last_reconnect_attempt = now
+					print('Attempting to reconnect to RTSP...')
+					if try_rtsp_connection():
+						print('RTSP connection restored, switching to live.')
+						with state_lock:
+							current_state = 'live'
+						state = 'live'
+						# Stop reconnecting ffmpeg and start live ffmpeg
+						if ffmpeg_proc:
+							ffmpeg_proc.terminate()
+							try:
+								ffmpeg_proc.wait(timeout=5)
+							except subprocess.TimeoutExpired:
+								ffmpeg_proc.kill()
+							ffmpeg_proc = None
+						ffmpeg_proc = start_ffmpeg('live')
+						last_state = 'live'
+						last_key = key
+					else:
+						# Only start reconnecting overlay if not already running
+						if not ffmpeg_proc or ffmpeg_proc.poll() is not None or last_state != 'reconnecting':
+							if ffmpeg_proc:
+								ffmpeg_proc.terminate()
+								try:
+									ffmpeg_proc.wait(timeout=5)
+								except subprocess.TimeoutExpired:
+									ffmpeg_proc.kill()
+								ffmpeg_proc = None
+							ffmpeg_proc = start_ffmpeg('reconnecting')
+							last_state = 'reconnecting'
+							last_key = key
+				# Sleep and continue loop
+				time.sleep(1)
+				continue
+
+			# Normal state handling
 			# Restart ffmpeg if state or key changed
 			if state != last_state or key != last_key:
 				if ffmpeg_proc:
@@ -438,16 +550,16 @@ def main_loop():
 				ffmpeg_proc = start_ffmpeg(state)
 				last_state = state
 				last_key = key
+
 			# If ffmpeg dies, handle fallback for live mode
 			if ffmpeg_proc and ffmpeg_proc.poll() is not None:
 				print('ffmpeg exited, restarting...')
 				with state_lock:
 					if current_state == 'live':
-						print('RTSP input failed, switching to break screen.')
-						current_state = 'break'
-						last_state = None  # Force restart with break screen
-					else:
-						ffmpeg_proc = start_ffmpeg(state)
+						print('RTSP input failed, switching to reconnecting screen.')
+						current_state = 'reconnecting'
+						last_state = None  # Force restart with reconnecting screen
+
 			time.sleep(1)
 	except KeyboardInterrupt:
 		print('Exiting...')

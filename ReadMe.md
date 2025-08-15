@@ -188,24 +188,22 @@ sudo systemctl start ffmpeg-rtsp
 
 ### Example command for mono microphone
 
-If your microphone only supports mono, use this command (with increased volume):
+If your microphone only supports mono, use this command to convert to stereo (with increased volume):
 
 ```sh
 rpicam-vid -t 0 --inline --width 1920 --height 1080 --framerate 30 -o - | \
 ffmpeg -thread_queue_size 512 -re -i - \
   -f alsa -sample_fmt s16 -channels 1 -ar 44100 -i hw:1,0 \
   -af "volume=2.0" \
-  -c:v copy -c:a aac -ar 44100 -b:a 128k -ac 1 \
+  -c:v copy -c:a aac -ar 44100 -b:a 128k -ac 2 \
   -f rtsp rtsp://localhost:8554/stream
 ```
 
 If you change the ffmpeg command, update your systemd service:
 
 ```ini
-ExecStart=/bin/bash -c 'rpicam-vid -t 0 --inline --width 1920 --height 1080 --framerate 30 -o - | ffmpeg -thread_queue_size 512 -re -i - -f alsa -sample_fmt s16 -channels 1 -ar 44100 -i hw:1,0 -af "volume=2.0" -c:v copy -c:a aac -ar 44100 -b:a 128k -f rtsp rtsp://localhost:8554/stream'
+ExecStart=/bin/bash -c 'rpicam-vid -t 0 --inline --width 1920 --height 1080 --framerate 30 -o - | ffmpeg -thread_queue_size 512 -re -i - -f alsa -sample_fmt s16 -channels 1 -ar 44100 -i hw:1,0 -af "volume=2.0" -c:v copy -c:a aac -ar 44100 -b:a 128k -ac 2 -f rtsp rtsp://localhost:8554/stream'
 ```
-
-If you still see errors, double-check device number with `arecord -l` and confirm no other process is using the mic.
 
 ---
 

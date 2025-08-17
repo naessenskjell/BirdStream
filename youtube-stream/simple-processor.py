@@ -9,7 +9,7 @@ from werkzeug.utils import secure_filename
 HOLD_IMAGE = '/app/overlays/hold_screen.png'
 BREAK_IMAGE = '/app/overlays/temporary_break.png'
 RECONNECT_IMAGE = '/app/overlays/reconnecting_screen.png'
-RTSP_URL = os.getenv('RTSP_URL', 'rtsp://192.168.0.22:8554/cam')
+RTSP_URL = os.getenv('RTSP_URL', 'rtsp://192.168.0.21:8554/cam')
 WIDTH, HEIGHT, FPS = 1920, 1080, 30
 UPLOAD_FOLDER = '/app/overlays'
 CUSTOM_IMAGE = os.path.join(UPLOAD_FOLDER, 'custom_screen.png')

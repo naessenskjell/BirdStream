@@ -1,16 +1,27 @@
-# Camera
+# BirdStream - Camera to Server Streaming System
+
+## Architecture Overview
+
+This system streams video from a Raspberry Pi camera to a remote server using SRT (Secure Reliable Transport) protocol for robust transmission over unreliable networks.
+
+**Flow:**
+1. **Camera (Raspberry Pi)**: Captures video/audio → Local RTSP streams → Combined stream → SRT transmission to server
+2. **Server**: Receives SRT stream → Converts to local RTSP → YouTube streaming processor
 
 ## Hardware
 
 - Raspberry Pi 3B+
 - Camera Module 3 Wide
+- USB Microphone (mono input, converted to stereo)
 - Power supply, fan, ...
 
-## Main Streaming Workflow: Separate Video and Audio RTSP Streams
+## Main Streaming Workflow: Camera to Server via SRT
 
-For robust and flexible streaming, transmit video and audio as separate RTSP streams and combine them into a unified stream for downstream processing or viewing.
+The complete workflow streams from the Raspberry Pi camera to a remote server using SRT for reliable transmission over unstable networks.
 
-### 1. Stream Video Only
+### Camera Side (Raspberry Pi)
+
+#### 1. Stream Video Only (Local RTSP)
 
 ```sh
 rpicam-vid -t 0 --inline --width 1920 --height 1080 --framerate 30 -o - \
@@ -21,41 +32,99 @@ rpicam-vid -t 0 --inline --width 1920 --height 1080 --framerate 30 -o - \
 
 - `-an`: disables audio in the video stream.
 
-### 2. Stream Audio Only
+#### 2. Stream Audio Only (Local RTSP with Mono to Stereo Conversion)
 
 ```sh
 ffmpeg -nostdin -f alsa -channels 1 -ar 44100 -i hw:1,0 \
-  -af "volume=2.0" \
+  -af "volume=2.0,pan=stereo|c0=c0|c1=c0" \
   -c:a aac -ar 44100 -b:a 128k \
   -vn \
   -f rtsp rtsp://localhost:8554/audio
 ```
 
 - `-vn`: disables video in the audio stream.
+- `pan=stereo|c0=c0|c1=c0`: converts mono input to stereo by duplicating the mono channel.
 
-### 3. Combine Video and Audio Streams
-
-Use ffmpeg to merge the separate RTSP streams into a single stream for clients or further processing:
+#### 3. Combine Video and Audio Streams (Local RTSP)
 
 ```sh
 ffmpeg -i rtsp://localhost:8554/video -i rtsp://localhost:8554/audio \
   -c:v copy -c:a copy \
-  -f rtsp rtsp://localhost:8554/stream
+  -f rtsp rtsp://localhost:8554/cam
 ```
 
-- This unified stream can be relayed by MediaMTX or consumed by downstream services.
+#### 4. Send Combined Stream to Server via SRT
 
-**Why separate streams?**
+```sh
+ffmpeg -rtsp_transport tcp -i rtsp://localhost:8554/cam \
+  -c:v copy -c:a aac -b:a 96k \
+  -f mpegts "srt://YOUR_SERVER_IP:9710?mode=caller&latency=500&rcvbuf=2000000&sndbuf=2000000"
+```
 
-- Isolates video and audio pipelines for easier troubleshooting and flexibility.
-- Allows independent restarts and monitoring.
-- Can help avoid audio dropouts or sync issues caused by hardware or software bugs.
+Replace `YOUR_SERVER_IP` with your server's IP address.
+
+**SRT Parameters for Maximum Robustness:**
+- `latency=500`: 500ms buffer for network jitter and packet loss recovery
+- `rcvbuf=2000000` & `sndbuf=2000000`: Large 2MB buffers for stability over varying network conditions
+- `mode=caller`: Camera initiates the connection to the server
+
+**Why this architecture?**
+
+- **Local RTSP streams**: Isolates video and audio pipelines for easier troubleshooting and flexibility.
+- **SRT transmission**: Provides reliable streaming over unreliable networks with automatic retransmission and adaptive bitrate.
+- **High-latency buffering**: 500ms latency and large buffers prioritize stability over real-time performance.
+- **Video copy optimization**: No CPU-intensive re-encoding, using direct video copy for better performance.
+- **Separate processing stages**: Allows independent restarts and monitoring of each component.
+
+### Server Side
+
+#### 1. Receive SRT Stream and Convert to RTSP
+
+On the server, receive the SRT stream from the camera and convert it to RTSP for local processing:
+
+```sh
+ffmpeg -i "srt://0.0.0.0:9710?mode=listener" \
+  -c:v copy -c:a aac -bsf:a aac_adtstoasc \
+  -f rtsp rtsp://localhost:8554/cam
+```
+
+This command:
+- Listens for SRT connections on port 9710
+- Receives the stream from the camera
+- Adds AAC headers for RTSP compatibility with `-bsf:a aac_adtstoasc`
+- Outputs it as RTSP on localhost:8554/cam for local processing
+
+#### 2. Create Systemd Service for SRT-to-RTSP Conversion
+
+Create `/etc/systemd/system/srt-to-rtsp.service`:
+
+```ini
+[Unit]
+Description=SRT to RTSP Stream Converter
+After=network.target mediamtx.service
+
+[Service]
+ExecStart=/bin/bash -c 'ffmpeg -i "srt://0.0.0.0:9710?mode=listener" -c:v copy -c:a aac -bsf:a aac_adtstoasc -f rtsp rtsp://localhost:8554/cam'
+Restart=always
+RestartSec=5
+User=admin
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start the service:
+
+```sh
+sudo systemctl enable srt-to-rtsp
+sudo systemctl start srt-to-rtsp
+```
 
 ---
 
-## Setting up MediaMTX
+## Setting up MediaMTX (Camera Side)
 
-MediaMTX acts as a robust RTSP server to relay your streams to clients.
+MediaMTX acts as a robust RTSP server on the Raspberry Pi to manage local streams before SRT transmission.
 
 ### 1. Install MediaMTX
 
@@ -71,11 +140,15 @@ Edit your `mediamtx.yml`:
 
 ```yaml
 paths:
+  video:
+    source: publisher
+  audio:
+    source: publisher  
   cam:
-    source: rtsp://localhost:8554/stream
+    source: publisher
 ```
 
-`cam` combines `video` and `audio` as a single stream.
+This allows the various ffmpeg processes to publish to the `/video`, `/audio`, and `/cam` paths.
 
 ### 3. Start MediaMTX
 
@@ -108,6 +181,25 @@ User=admin
 WantedBy=multi-user.target
 ```
 
+Create the configuration directory and file:
+
+```sh
+sudo mkdir -p /etc/mediamtx
+sudo nano /etc/mediamtx/mediamtx.yml
+```
+
+Add the MediaMTX configuration:
+
+```yaml
+paths:
+  video:
+    source: publisher
+  audio:
+    source: publisher  
+  cam:
+    source: publisher
+```
+
 Enable and start the service:
 
 ```sh
@@ -117,16 +209,16 @@ sudo systemctl start mediamtx
 
 ---
 
-## Autostarting ffmpeg Streams with systemd
+## Autostarting Camera Streams with systemd (Camera Side)
 
-To automatically start the separate video, audio, and combined streams on boot, create the following systemd service files.
+To automatically start the camera streaming pipeline on boot, create the following systemd service files on the Raspberry Pi.
 
 ### 1. Video Stream Service
 
 ```ini
 [Unit]
 Description=FFmpeg RTSP Video Stream
-After=network.target
+After=network.target mediamtx.service
 
 [Service]
 ExecStart=/bin/bash -c 'rpicam-vid -t 0 --inline --width 1920 --height 1080 --framerate 30 -o - | ffmpeg -nostdin -thread_queue_size 512 -fflags +genpts -re -i - -c:v copy -an -f rtsp rtsp://localhost:8554/video'
@@ -140,15 +232,15 @@ WantedBy=multi-user.target
 
 Save as `/etc/systemd/system/ffmpeg-video.service`.
 
-### 2. Audio Stream Service
+### 2. Audio Stream Service (with Mono to Stereo Conversion)
 
 ```ini
 [Unit]
 Description=FFmpeg RTSP Audio Stream
-After=network.target
+After=network.target mediamtx.service
 
 [Service]
-ExecStart=/bin/bash -c 'ffmpeg -nostdin -f alsa -channels 1 -ar 44100 -i hw:1,0 -af "volume=2.0" -c:a aac -ar 44100 -b:a 128k -vn -f rtsp rtsp://localhost:8554/audio'
+ExecStart=/bin/bash -c 'ffmpeg -nostdin -f alsa -channels 1 -ar 44100 -i hw:1,0 -af "volume=2.0,pan=stereo|c0=c0|c1=c0" -c:a aac -ar 44100 -b:a 128k -vn -f rtsp rtsp://localhost:8554/audio'
 Restart=always
 RestartSec=5
 User=admin
@@ -164,10 +256,10 @@ Save as `/etc/systemd/system/ffmpeg-audio.service`.
 ```ini
 [Unit]
 Description=FFmpeg RTSP Combined Stream (Video + Audio)
-After=network.target
+After=network.target ffmpeg-video.service ffmpeg-audio.service
 
 [Service]
-ExecStart=/bin/bash -c 'ffmpeg -i rtsp://localhost:8554/video -i rtsp://localhost:8554/audio -c:v copy -c:a copy -f rtsp rtsp://localhost:8554/stream'
+ExecStart=/bin/bash -c 'ffmpeg -i rtsp://localhost:8554/video -i rtsp://localhost:8554/audio -fflags +genpts -avoid_negative_ts make_zero -c:v copy -c:a copy -f rtsp rtsp://localhost:8554/cam'
 Restart=always
 RestartSec=5
 User=admin
@@ -178,28 +270,66 @@ WantedBy=multi-user.target
 
 Save as `/etc/systemd/system/ffmpeg-combined.service`.
 
-### Enable and Start Services
+### 4. SRT Transmission Service
+
+```ini
+[Unit]
+Description=SRT Stream Transmission to Server
+After=network.target ffmpeg-combined.service
+
+[Service]
+ExecStart=/bin/bash -c 'ffmpeg -rtsp_transport tcp -i rtsp://localhost:8554/cam -c:v copy -c:a aac -b:a 96k -f mpegts "srt://YOUR_SERVER_IP:9710?mode=caller&latency=500&rcvbuf=2000000&sndbuf=2000000"'
+Restart=always
+RestartSec=5
+User=admin
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Replace `YOUR_SERVER_IP` with your server's IP address. Save as `/etc/systemd/system/srt-transmission.service`.
+
+**For even more stability, you can increase latency further:**
+```ini
+[Service]
+ExecStart=/bin/bash -c 'ffmpeg -rtsp_transport tcp -i rtsp://localhost:8554/cam -c:v copy -c:a aac -b:a 96k -f mpegts "srt://YOUR_SERVER_IP:9710?mode=caller&latency=1000&rcvbuf=4000000&sndbuf=4000000"'
+```
+
+This provides 1-second buffering with 4MB buffers for maximum robustness over poor network conditions.
+
+### Enable and Start Services (Camera Side)
 
 ```sh
+sudo systemctl enable mediamtx
 sudo systemctl enable ffmpeg-video
 sudo systemctl enable ffmpeg-audio
 sudo systemctl enable ffmpeg-combined
+sudo systemctl enable srt-transmission
 
+sudo systemctl start mediamtx
 sudo systemctl start ffmpeg-video
 sudo systemctl start ffmpeg-audio
 sudo systemctl start ffmpeg-combined
+sudo systemctl start srt-transmission
 ```
 
 ---
 
-## Stream processing
+## Stream Processing (Server Side)
 
-Basic setup on the server:
+The complete server setup now includes:
+1. SRT-to-RTSP conversion service (receives from camera)
+2. YouTube streaming processing container (processes local RTSP)
+
+### Setup Steps:
+
+1. **Start the SRT-to-RTSP service** (see Server Side section above)
+2. **Set up the YouTube streaming container:**
 
 - Place the `youtube-stream` folder on your server.
 - Launch the Docker container using `docker-compose` from inside the `youtube-stream` folder.
-- This will run the Python script that redirects the RTSP stream to YouTube.
-- The webserver in the container can serve hold screens, which are shown on YouTube when the main stream is not active.
+- The Python script now connects to the local RTSP stream (converted from SRT) and relays it to YouTube.
+- The webserver in the container serves hold screens when the main stream is not active.
 
 **To start the container:**
 
@@ -211,12 +341,11 @@ docker-compose up -d
 
 ### More details on youtube-stream setup
 
-- The Python script (`main.py`) inside the container monitors the RTSP stream and relays it to YouTube using ffmpeg.
-- If the RTSP stream is unavailable, the script switches to a hold screen (static image or video) served from the webserver.
-- You can customize hold screens by replacing files in the `hold_screens` directory inside `youtube-stream`.
-- Configuration (such as YouTube stream key, RTSP source, and hold screen paths) is set in the `config.yaml` file.
-- The Docker Compose file (`docker-compose.yml`) defines the service and mounts necessary volumes for configuration and hold screens.
-- Custom hold screen images and new stream keys can be added dynamically through the webserver (that runs on port 3000).
+- The Python script (`simple-processor.py`) monitors the local RTSP stream at `rtsp://localhost:8554/cam` (converted from the SRT stream).
+- If the RTSP stream is unavailable, the script switches to a hold screen (static image or video).
+- You can customize hold screens by replacing files in the `overlays` directory inside `youtube-stream`.
+- The Docker Compose file (`docker-compose.yml`) defines the service and mounts necessary volumes.
+- Custom hold screen images and new stream keys can be added dynamically through the webserver (runs on port 3000).
 - Logs and status can be checked with:
 
 ```sh
@@ -231,24 +360,3 @@ docker rm stream-processor
 docker-compose build
 docker-compose up -d
 ```
-
-## Troubleshooting: Mono Microphone Audio Dropouts
-
-If your audio stream works on boot but drops out after some time:
-
-- **Test microphone stability:**  
-  Run `arecord -D hw:1,0 -f S16_LE -c1 -r 44100 test.wav` and play back with `aplay test.wav` to check if the device disconnects or fails.
-- **Check system logs:**  
-  Run `journalctl -u ffmpeg-rtsp` and `dmesg` for hardware or ALSA errors.
-- **Try a different USB port or power supply** for the microphone.
-- **Update Raspberry Pi OS and firmware:**  
-  `sudo apt update && sudo apt upgrade && sudo rpi-update`
-- **Try a different microphone** to rule out hardware issues.
-- **Increase ALSA buffer size:**  
-  Add `-buffer_size 512k` to the ffmpeg ALSA input if supported.
-- **Restart the service:**  
-  `sudo systemctl restart ffmpeg-rtsp`
-- **Check for suspend/power-saving:**  
-  Disable USB autosuspend if needed.
-
-If issues persist, consider using a USB sound card or a different microphone model.

@@ -58,21 +58,21 @@ ffmpeg -i rtsp://localhost:8554/video -i rtsp://localhost:8554/audio \
 ```sh
 ffmpeg -rtsp_transport tcp -i rtsp://localhost:8554/cam \
   -c:v copy -c:a aac -b:a 96k \
-  -f mpegts "srt://YOUR_SERVER_IP:9710?mode=caller&latency=500&rcvbuf=2000000&sndbuf=2000000"
+  -f mpegts "srt://YOUR_SERVER_IP:9710?mode=caller&latency=10000&rcvbuf=20000000&sndbuf=20000000"
 ```
 
 Replace `YOUR_SERVER_IP` with your server's IP address.
 
 **SRT Parameters for Maximum Robustness:**
-- `latency=500`: 500ms buffer for network jitter and packet loss recovery
-- `rcvbuf=2000000` & `sndbuf=2000000`: Large 2MB buffers for stability over varying network conditions
+- `latency=10000`: 10s buffer for network jitter and packet loss recovery
+- `rcvbuf=20000000` & `sndbuf=20000000`: Large 20MB buffers for stability over varying network conditions
 - `mode=caller`: Camera initiates the connection to the server
 
 **Why this architecture?**
 
 - **Local RTSP streams**: Isolates video and audio pipelines for easier troubleshooting and flexibility.
 - **SRT transmission**: Provides reliable streaming over unreliable networks with automatic retransmission and adaptive bitrate.
-- **High-latency buffering**: 500ms latency and large buffers prioritize stability over real-time performance.
+- **High-latency buffering**: 10s latency and large buffers prioritize stability over real-time performance.
 - **Video copy optimization**: No CPU-intensive re-encoding, using direct video copy for better performance.
 - **Separate processing stages**: Allows independent restarts and monitoring of each component.
 
@@ -83,16 +83,19 @@ Replace `YOUR_SERVER_IP` with your server's IP address.
 On the server, receive the SRT stream from the camera and convert it to RTSP for local processing:
 
 ```sh
-ffmpeg -i "srt://0.0.0.0:9710?mode=listener" \
+ffmpeg \
+  -itsoffset 10 -i "srt://0.0.0.0:9710?mode=listener&latency=10000&rcvbuf=20000000&sndbuf=20000000" \
+  -i "srt://0.0.0.0:9710?mode=listener&latency=10000&rcvbuf=20000000&sndbuf=20000000" \
+  -map 0:v -map 1:a \
   -c:v copy -c:a aac -bsf:a aac_adtstoasc \
-  -f rtsp rtsp://localhost:8554/cam
+  -f rtsp rtsp://127.0.0.1:8554/live
 ```
 
 This command:
-- Listens for SRT connections on port 9710
-- Receives the stream from the camera
+- Listens for SRT connections on port 9710 (`mode=listener`)
+- Applies a 10-second offset for stability (`-itsoffset 10`)
 - Adds AAC headers for RTSP compatibility with `-bsf:a aac_adtstoasc`
-- Outputs it as RTSP on localhost:8554/cam for local processing
+- Outputs the combined stream as RTSP to `rtsp://127.0.0.1:8554/live` for local processing
 
 #### 2. Create Systemd Service for SRT-to-RTSP Conversion
 
@@ -104,7 +107,7 @@ Description=SRT to RTSP Stream Converter
 After=network.target mediamtx.service
 
 [Service]
-ExecStart=/bin/bash -c 'ffmpeg -i "srt://0.0.0.0:9710?mode=listener" -c:v copy -c:a aac -bsf:a aac_adtstoasc -f rtsp rtsp://localhost:8554/cam'
+ExecStart=/bin/bash -c 'ffmpeg -itsoffset 10 -i "srt://0.0.0.0:9710?mode=listener&latency=10000&rcvbuf=20000000&sndbuf=20000000" -i "srt://0.0.0.0:9710?mode=listener&latency=10000&rcvbuf=20000000&sndbuf=20000000" -map 0:v -map 1:a -c:v copy -c:a aac -bsf:a aac_adtstoasc -f rtsp rtsp://localhost:8554/cam'
 Restart=always
 RestartSec=5
 User=admin
@@ -278,7 +281,7 @@ Description=SRT Stream Transmission to Server
 After=network.target ffmpeg-combined.service
 
 [Service]
-ExecStart=/bin/bash -c 'ffmpeg -rtsp_transport tcp -i rtsp://localhost:8554/cam -c:v copy -c:a aac -b:a 96k -f mpegts "srt://YOUR_SERVER_IP:9710?mode=caller&latency=500&rcvbuf=2000000&sndbuf=2000000"'
+ExecStart=/bin/bash -c 'ffmpeg -rtsp_transport tcp -i rtsp://localhost:8554/cam -c:v copy -c:a aac -b:a 96k -f mpegts "srt://YOUR_SERVER_IP:9710?mode=caller&latency=10000&rcvbuf=20000000&sndbuf=20000000"'
 Restart=always
 RestartSec=5
 User=admin
@@ -292,10 +295,10 @@ Replace `YOUR_SERVER_IP` with your server's IP address. Save as `/etc/systemd/sy
 **For even more stability, you can increase latency further:**
 ```ini
 [Service]
-ExecStart=/bin/bash -c 'ffmpeg -rtsp_transport tcp -i rtsp://localhost:8554/cam -c:v copy -c:a aac -b:a 96k -f mpegts "srt://YOUR_SERVER_IP:9710?mode=caller&latency=1000&rcvbuf=4000000&sndbuf=4000000"'
+ExecStart=/bin/bash -c 'ffmpeg -rtsp_transport tcp -i rtsp://localhost:8554/cam -c:v copy -c:a aac -b:a 96k -f mpegts "srt://YOUR_SERVER_IP:9710?mode=caller&latency=10000&rcvbuf=20000000&sndbuf=20000000"'
 ```
 
-This provides 1-second buffering with 4MB buffers for maximum robustness over poor network conditions.
+This provides 10-second buffering with 20MB buffers for maximum robustness over poor network conditions.
 
 ### Enable and Start Services (Camera Side)
 

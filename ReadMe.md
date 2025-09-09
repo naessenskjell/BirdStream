@@ -2,11 +2,11 @@
 
 ## Architecture Overview
 
-This system streams video from a Raspberry Pi camera to a remote server using SRT (Secure Reliable Transport) protocol for robust transmission over unreliable networks.
+This system streams video from a Raspberry Pi camera to a remote server using RTMP protocol with a buffer for robust transmission over unreliable networks.
 
 **Flow:**
-1. **Camera (Raspberry Pi)**: Captures video/audio → Local RTSP streams → Combined stream → SRT transmission to server
-2. **Server**: Receives SRT stream → Converts to local RTSP → YouTube streaming processor
+1. **Camera (Raspberry Pi)**: Captures video/audio → Local RTSP streams → Combined stream → RTMP transmission to server
+2. **Server**: Receives RTMP stream → YouTube streaming processor
 
 ## Hardware
 
@@ -15,9 +15,9 @@ This system streams video from a Raspberry Pi camera to a remote server using SR
 - USB Microphone (mono input, converted to stereo)
 - Power supply, fan, ...
 
-## Main Streaming Workflow: Camera to Server via SRT
+## Main Streaming Workflow: Camera to Server via RTMP
 
-The complete workflow streams from the Raspberry Pi camera to a remote server using SRT for reliable transmission over unstable networks.
+The complete workflow streams from the Raspberry Pi camera to a remote server using RTMP.
 
 ### Camera Side (Raspberry Pi)
 
@@ -53,81 +53,60 @@ ffmpeg -i rtsp://localhost:8554/video -i rtsp://localhost:8554/audio \
   -f rtsp rtsp://localhost:8554/cam
 ```
 
-#### 4. Send Combined Stream to Server via SRT
+#### 4. Send Combined Stream to Server
 
 ```sh
 ffmpeg -rtsp_transport tcp -i rtsp://localhost:8554/cam \
   -c:v copy -c:a aac -b:a 96k \
-  -f mpegts "srt://YOUR_SERVER_IP:9710?mode=caller&latency=10000&rcvbuf=20000000&sndbuf=20000000"
+  -f flv rtmp://YOUR_SERVER_IP/live/stream
 ```
 
 Replace `YOUR_SERVER_IP` with your server's IP address.
 
-**SRT Parameters for Maximum Robustness:**
-- `latency=10000`: 10s buffer for network jitter and packet loss recovery
-- `rcvbuf=20000000` & `sndbuf=20000000`: Large 20MB buffers for stability over varying network conditions
-- `mode=caller`: Camera initiates the connection to the server
-
-**Why this architecture?**
-
-- **Local RTSP streams**: Isolates video and audio pipelines for easier troubleshooting and flexibility.
-- **SRT transmission**: Provides reliable streaming over unreliable networks with automatic retransmission and adaptive bitrate.
-- **High-latency buffering**: 10s latency and large buffers prioritize stability over real-time performance.
-- **Video copy optimization**: No CPU-intensive re-encoding, using direct video copy for better performance.
-- **Separate processing stages**: Allows independent restarts and monitoring of each component.
 
 ### Server Side
 
-#### 1. Receive SRT Stream and Convert to RTSP
+#### Receive Stream
 
-On the server, receive the SRT stream from the camera and convert it to RTSP for local processing:
+On the server, receive the stream from the camera and host it locally:
 
-```sh
-ffmpeg \
-  -itsoffset 10 -i "srt://0.0.0.0:9710?mode=listener&latency=10000&rcvbuf=20000000&sndbuf=20000000" \
-  -i "srt://0.0.0.0:9710?mode=listener&latency=10000&rcvbuf=20000000&sndbuf=20000000" \
-  -map 0:v -map 1:a \
-  -c:v copy -c:a aac -bsf:a aac_adtstoasc \
-  -f rtsp rtsp://127.0.0.1:8554/live
-```
-
-This command:
-- Listens for SRT connections on port 9710 (`mode=listener`)
-- Applies a 10-second offset for stability (`-itsoffset 10`)
-- Adds AAC headers for RTSP compatibility with `-bsf:a aac_adtstoasc`
-- Outputs the combined stream as RTSP to `rtsp://127.0.0.1:8554/live` for local processing
-
-#### 2. Create Systemd Service for SRT-to-RTSP Conversion
-
-Create `/etc/systemd/system/srt-to-rtsp.service`:
+Add the following in `/etc/nginx/nginx.conf`:
 
 ```ini
-[Unit]
-Description=SRT to RTSP Stream Converter
-After=network.target mediamtx.service
+rtmp {
+    server {
+        listen 1935;
+        chunk_size 4096;
 
-[Service]
-ExecStart=/bin/bash -c 'ffmpeg -itsoffset 10 -i "srt://0.0.0.0:9710?mode=listener&latency=10000&rcvbuf=20000000&sndbuf=20000000" -i "srt://0.0.0.0:9710?mode=listener&latency=10000&rcvbuf=20000000&sndbuf=20000000" -map 0:v -map 1:a -c:v copy -c:a aac -bsf:a aac_adtstoasc -f rtsp rtsp://localhost:8554/cam'
-Restart=always
-RestartSec=5
-User=admin
+        application live {
+            live on;
+            record off;
 
-[Install]
-WantedBy=multi-user.target
+            # HLS settings
+            hls on;
+            hls_path /tmp/hls;
+            hls_fragment 10s;
+            hls_playlist_length 30s;
+            hls_continuous on;
+            hls_cleanup on;
+        }
+    }
+}
 ```
 
-Enable and start the service:
+This makes Nginx listen on port 1935 for RTMP on the /live application. In this case, a 30 second buffer is added for stability.
+
+Restart the service:
 
 ```sh
-sudo systemctl enable srt-to-rtsp
-sudo systemctl start srt-to-rtsp
+sudo systemctl reload nginx
 ```
 
 ---
 
 ## Setting up MediaMTX (Camera Side)
 
-MediaMTX acts as a robust RTSP server on the Raspberry Pi to manage local streams before SRT transmission.
+MediaMTX acts as a robust RTSP server on the Raspberry Pi to manage local streams before RTMP transmission.
 
 ### 1. Install MediaMTX
 
@@ -273,15 +252,15 @@ WantedBy=multi-user.target
 
 Save as `/etc/systemd/system/ffmpeg-combined.service`.
 
-### 4. SRT Transmission Service
+### 4. Combined Stream Transmission Service
 
 ```ini
 [Unit]
-Description=SRT Stream Transmission to Server
+Description=Stream Transmission to Server
 After=network.target ffmpeg-combined.service
 
 [Service]
-ExecStart=/bin/bash -c 'ffmpeg -rtsp_transport tcp -i rtsp://localhost:8554/cam -c:v copy -c:a aac -b:a 96k -f mpegts "srt://YOUR_SERVER_IP:9710?mode=caller&latency=10000&rcvbuf=20000000&sndbuf=20000000"'
+ExecStart=/bin/bash -c 'ffmpeg -rtsp_transport tcp -i rtsp://localhost:8554/cam -c:v copy -c:a aac -b:a 96k -f flv rtmp://YOUR_SERVER_IP/live/stream
 Restart=always
 RestartSec=5
 User=admin
@@ -290,43 +269,36 @@ User=admin
 WantedBy=multi-user.target
 ```
 
-Replace `YOUR_SERVER_IP` with your server's IP address. Save as `/etc/systemd/system/srt-transmission.service`.
+Replace `YOUR_SERVER_IP` with your server's IP address. Save as `/etc/systemd/system/stream-transmission.service`.
 
-**For even more stability, you can increase latency further:**
-```ini
-[Service]
-ExecStart=/bin/bash -c 'ffmpeg -rtsp_transport tcp -i rtsp://localhost:8554/cam -c:v copy -c:a aac -b:a 96k -f mpegts "srt://YOUR_SERVER_IP:9710?mode=caller&latency=10000&rcvbuf=20000000&sndbuf=20000000"'
-```
 
-This provides 10-second buffering with 20MB buffers for maximum robustness over poor network conditions.
-
-### Enable and Start Services (Camera Side)
+### 5. Enable and Start Services (Camera Side)
 
 ```sh
 sudo systemctl enable mediamtx
 sudo systemctl enable ffmpeg-video
 sudo systemctl enable ffmpeg-audio
 sudo systemctl enable ffmpeg-combined
-sudo systemctl enable srt-transmission
+sudo systemctl enable stream-transmission
 
 sudo systemctl start mediamtx
 sudo systemctl start ffmpeg-video
 sudo systemctl start ffmpeg-audio
 sudo systemctl start ffmpeg-combined
-sudo systemctl start srt-transmission
+sudo systemctl start stream-transmission
 ```
 
 ---
 
 ## Stream Processing (Server Side)
 
-The complete server setup now includes:
-1. SRT-to-RTSP conversion service (receives from camera)
+The complete server setup includes:
+1. Nginx setup (for receiving the stream from the camera)
 2. YouTube streaming processing container (processes local RTSP)
 
 ### Setup Steps:
 
-1. **Start the SRT-to-RTSP service** (see Server Side section above)
+1. **Start the Nginx service** (see Server Side section above)
 2. **Set up the YouTube streaming container:**
 
 - Place the `youtube-stream` folder on your server.

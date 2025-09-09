@@ -251,7 +251,7 @@ Launch the YouTube streaming processing container (processes local RTSP)
 
 - Place the `youtube-stream` folder on your server.
 - Launch the Docker container using `docker-compose` from inside the `youtube-stream` folder.
-- The Python script now connects to the local RTSP stream (converted from SRT) and relays it to YouTube.
+- The Python script now connects to the local RTSP stream and relays it to YouTube.
 - The webserver in the container serves hold screens when the main stream is not active.
 
 **To start the container:**

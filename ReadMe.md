@@ -8,6 +8,8 @@ This system streams video from a Raspberry Pi camera to a remote server using RT
 1. **Camera (Raspberry Pi)**: Captures video/audio → Local RTSP streams → Combined stream → RTMP transmission to server
 2. **Server**: Receives RTMP stream → YouTube streaming processor
 
+On the camera side, two separate streams get created, one for the video and one for the audio. These then get combined into a single stream and transmitted to the server over RTMP.
+
 ## Hardware
 
 - Raspberry Pi 3B+
@@ -15,100 +17,13 @@ This system streams video from a Raspberry Pi camera to a remote server using RT
 - USB Microphone (mono input, converted to stereo)
 - Power supply, fan, ...
 
-## Main Streaming Workflow: Camera to Server via RTMP
+## Setting up the camera
 
-The complete workflow streams from the Raspberry Pi camera to a remote server using RTMP.
-
-### Camera Side (Raspberry Pi)
-
-#### 1. Stream Video Only (Local RTSP)
-
-```sh
-rpicam-vid -t 0 --inline --width 1920 --height 1080 --framerate 30 -o - \
-| ffmpeg -nostdin -thread_queue_size 512 -fflags +genpts -re -i - \
-  -c:v copy -an \
-  -f rtsp rtsp://localhost:8554/video
-```
-
-- `-an`: disables audio in the video stream.
-
-#### 2. Stream Audio Only (Local RTSP with Mono to Stereo Conversion)
-
-```sh
-ffmpeg -nostdin -f alsa -channels 1 -ar 44100 -i hw:1,0 \
-  -af "volume=2.0,pan=stereo|c0=c0|c1=c0" \
-  -c:a aac -ar 44100 -b:a 128k \
-  -vn \
-  -f rtsp rtsp://localhost:8554/audio
-```
-
-- `-vn`: disables video in the audio stream.
-- `pan=stereo|c0=c0|c1=c0`: converts mono input to stereo by duplicating the mono channel.
-
-#### 3. Combine Video and Audio Streams (Local RTSP)
-
-```sh
-ffmpeg -i rtsp://localhost:8554/video -i rtsp://localhost:8554/audio \
-  -c:v copy -c:a copy \
-  -f rtsp rtsp://localhost:8554/cam
-```
-
-#### 4. Send Combined Stream to Server
-
-```sh
-ffmpeg -rtsp_transport tcp -i rtsp://localhost:8554/cam \
-  -c:v copy -c:a aac -b:a 96k \
-  -f flv rtmp://YOUR_SERVER_IP/live/stream
-```
-
-Replace `YOUR_SERVER_IP` with your server's IP address.
-
-
-### Server Side
-
-#### Receive Stream
-
-On the server, receive the stream from the camera and host it locally:
-
-Add the following in `/etc/nginx/nginx.conf`:
-
-```ini
-rtmp {
-    server {
-        listen 1935;
-        chunk_size 4096;
-
-        application live {
-            live on;
-            record off;
-
-            # HLS settings
-            hls on;
-            hls_path /tmp/hls;
-            hls_fragment 10s;
-            hls_playlist_length 30s;
-            hls_continuous on;
-            hls_cleanup on;
-        }
-    }
-}
-```
-
-This makes Nginx listen on port 1935 for RTMP on the /live application. In this case, a 30 second buffer is added for stability.
-
-Restart the service:
-
-```sh
-sudo systemctl reload nginx
-```
-
----
-
-## Setting up MediaMTX (Camera Side)
+### 1. Setting up MediaMTX
 
 MediaMTX acts as a robust RTSP server on the Raspberry Pi to manage local streams before RTMP transmission.
 
-### 1. Install MediaMTX
+#### 1. Install MediaMTX
 
 ```sh
 wget https://github.com/bluenviron/mediamtx/releases/latest/download/mediamtx_linux_armv7.tar.gz
@@ -116,7 +31,7 @@ tar xvf mediamtx_linux_armv7.tar.gz
 sudo mv mediamtx /usr/local/bin/
 ```
 
-### 2. Configure MediaMTX
+#### 2. Configure MediaMTX
 
 Edit your `mediamtx.yml`:
 
@@ -132,13 +47,13 @@ paths:
 
 This allows the various ffmpeg processes to publish to the `/video`, `/audio`, and `/cam` paths.
 
-### 3. Start MediaMTX
+#### 3. Start MediaMTX
 
 ```sh
 ./mediamtx /path/to/mediamtx.yml
 ```
 
-### 4. Autostart MediaMTX
+#### 4. Autostart MediaMTX
 
 Create a systemd service file:
 
@@ -191,11 +106,11 @@ sudo systemctl start mediamtx
 
 ---
 
-## Autostarting Camera Streams with systemd (Camera Side)
+### 2. Autostarting Camera Streams with systemd
 
 To automatically start the camera streaming pipeline on boot, create the following systemd service files on the Raspberry Pi.
 
-### 1. Video Stream Service
+#### 1. Video Stream Service
 
 ```ini
 [Unit]
@@ -214,7 +129,7 @@ WantedBy=multi-user.target
 
 Save as `/etc/systemd/system/ffmpeg-video.service`.
 
-### 2. Audio Stream Service (with Mono to Stereo Conversion)
+#### 2. Audio Stream Service (with Mono to Stereo Conversion)
 
 ```ini
 [Unit]
@@ -233,7 +148,7 @@ WantedBy=multi-user.target
 
 Save as `/etc/systemd/system/ffmpeg-audio.service`.
 
-### 3. Combined Stream Service
+#### 3. Combined Stream Service
 
 ```ini
 [Unit]
@@ -252,7 +167,7 @@ WantedBy=multi-user.target
 
 Save as `/etc/systemd/system/ffmpeg-combined.service`.
 
-### 4. Combined Stream Transmission Service
+#### 4. Combined Stream Transmission Service
 
 ```ini
 [Unit]
@@ -272,7 +187,7 @@ WantedBy=multi-user.target
 Replace `YOUR_SERVER_IP` with your server's IP address. Save as `/etc/systemd/system/stream-transmission.service`.
 
 
-### 5. Enable and Start Services (Camera Side)
+#### 5. Enable and Start Services (Camera Side)
 
 ```sh
 sudo systemctl enable mediamtx
@@ -290,16 +205,49 @@ sudo systemctl start stream-transmission
 
 ---
 
-## Stream Processing (Server Side)
+## Setting up the Server
 
-The complete server setup includes:
-1. Nginx setup (for receiving the stream from the camera)
-2. YouTube streaming processing container (processes local RTSP)
+### 1. Receive Stream Using Nginx
 
-### Setup Steps:
+On the server, receive the stream from the camera and host it locally:
 
-1. **Start the Nginx service** (see Server Side section above)
-2. **Set up the YouTube streaming container:**
+Add the following in `/etc/nginx/nginx.conf`:
+
+```ini
+rtmp {
+    server {
+        listen 1935;
+        chunk_size 4096;
+
+        application live {
+            live on;
+            record off;
+
+            # HLS settings
+            hls on;
+            hls_path /tmp/hls;
+            hls_fragment 10s;
+            hls_playlist_length 30s;
+            hls_continuous on;
+            hls_cleanup on;
+        }
+    }
+}
+```
+
+This makes Nginx listen on port 1935 for RTMP on the /live application. In this case, a 30 second buffer is added for stability.
+
+Restart the service:
+
+```sh
+sudo systemctl reload nginx
+```
+
+### 2. Stream Processing
+
+Launch the YouTube streaming processing container (processes local RTSP)
+
+#### Setup Steps:
 
 - Place the `youtube-stream` folder on your server.
 - Launch the Docker container using `docker-compose` from inside the `youtube-stream` folder.
@@ -316,7 +264,7 @@ docker-compose up -d
 
 ### More details on youtube-stream setup
 
-- The Python script (`simple-processor.py`) monitors the local RTSP stream at `rtsp://localhost:8554/cam` (converted from the SRT stream).
+- The Python script (`simple-processor.py`) monitors the local RTSP stream at `rtsp://localhost:8554/live/stream`.
 - If the RTSP stream is unavailable, the script switches to a hold screen (static image or video).
 - You can customize hold screens by replacing files in the `overlays` directory inside `youtube-stream`.
 - The Docker Compose file (`docker-compose.yml`) defines the service and mounts necessary volumes.

@@ -9,7 +9,7 @@ from werkzeug.utils import secure_filename
 HOLD_IMAGE = '/app/overlays/hold_screen.png'
 BREAK_IMAGE = '/app/overlays/temporary_break.png'
 RECONNECT_IMAGE = '/app/overlays/reconnecting_screen.png'
-RTSP_URL = os.getenv('RTSP_URL', 'rtsp://192.168.0.21:8554/live/stream')
+RTSP_URL = os.getenv('RTSP_URL', 'rtmp://127.0.0.1/live/cam') # Can be RTSP or RTMP
 WIDTH, HEIGHT, FPS = 1920, 1080, 30
 UPLOAD_FOLDER = '/app/overlays'
 CUSTOM_IMAGE = os.path.join(UPLOAD_FOLDER, 'custom_screen.png')
@@ -337,29 +337,38 @@ def run_flask():
 # --- FFmpeg process management ---
 
 def ffmpeg_cmd_for_state(state):
-	# Build the ffmpeg command for the current state
+	"""
+    Build the ffmpeg command for the current state.
+    - live: pass-through RTMP/RTSP video, encode audio if needed
+    - custom/reconnecting/hold/break: static image overlays
+    """
 	if state == 'stopped':
 		return None  # No ffmpeg process should run
+	
 	youtube_url = get_youtube_url()
+
 	if state == 'live':
 		# Pass through RTSP video/audio to YouTube (copy video, encode audio)
 		return [
 			'ffmpeg',
-			'-rtsp_transport', 'tcp',
-			'-thread_queue_size', '512',
-			'-fflags', '+nobuffer',
 			'-i', RTSP_URL,
 			'-c:v', 'copy',
-			'-b:v', '8000k',
-			'-bufsize', '512k',
 			'-c:a', 'aac',
 			'-ar', '44100',
-			'-b:a', '128k',
 			'-f', 'flv',
 			youtube_url
 		]
-	elif state == 'custom':
-		img = CUSTOM_IMAGE
+	
+	# Map states to overlay images
+	state_images = {
+		'custom': CUSTOM_IMAGE,
+		'reconnecting': RECONNECT_IMAGE,
+		'hold': HOLD_IMAGE,
+		'break': BREAK_IMAGE
+	}
+
+	if state in state_images:
+		img = state_images[state]
 		return [
 			'ffmpeg',
 			'-loop', '1',
@@ -382,54 +391,9 @@ def ffmpeg_cmd_for_state(state):
 			'-f', 'flv',
 			youtube_url
 		]
-	elif state == 'reconnecting':
-		img = RECONNECT_IMAGE
-		return [
-			'ffmpeg',
-			'-loop', '1',
-			'-re',
-			'-i', img,
-			'-f', 'lavfi',
-			'-t', '3600',
-			'-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
-			'-vf', f'scale={WIDTH}:{HEIGHT},format=yuv420p',
-			'-r', str(FPS),
-			'-c:v', 'libx264',
-			'-preset', 'veryfast',
-			'-b:v', '8000k',
-			'-bufsize', '512k',
-			'-pix_fmt', 'yuv420p',
-			'-c:a', 'aac',
-			'-ar', '44100',
-			'-b:a', '128k',
-			'-shortest',
-			'-f', 'flv',
-			youtube_url
-		]
-	else:
-		img = HOLD_IMAGE if state == 'hold' else BREAK_IMAGE
-		return [
-			'ffmpeg',
-			'-loop', '1',
-			'-re',
-			'-i', img,
-			'-f', 'lavfi',
-			'-t', '3600',
-			'-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
-			'-vf', f'scale={WIDTH}:{HEIGHT},format=yuv420p',
-			'-r', str(FPS),
-			'-c:v', 'libx264',
-			'-preset', 'veryfast',
-			'-b:v', '8000k',
-			'-bufsize', '512k',
-			'-pix_fmt', 'yuv420p',
-			'-c:a', 'aac',
-			'-ar', '44100',
-			'-b:a', '128k',
-			'-shortest',
-			'-f', 'flv',
-			youtube_url
-		]
+
+	# Fallback in case of unexpected state
+	return None
 
 def start_ffmpeg(state):
 	# Start ffmpeg with the given state, or return None if stopped

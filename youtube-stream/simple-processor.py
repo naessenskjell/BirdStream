@@ -472,30 +472,6 @@ def main_loop():
 			with youtube_key_lock:
 				key = youtube_key
 
-			# Proactively check RTSP connection in live mode
-			if state == 'live':
-				now = time.time()
-				if now - last_live_check > live_check_interval:
-					last_live_check = now
-					if not try_rtsp_connection():
-						print('RTSP connection lost during live, switching to reconnecting.')
-						with state_lock:
-							current_state = 'reconnecting'
-						state = 'reconnecting'
-						# Stop live ffmpeg and start reconnecting overlay
-						if ffmpeg_proc:
-							ffmpeg_proc.terminate()
-							try:
-								ffmpeg_proc.wait(timeout=5)
-							except subprocess.TimeoutExpired:
-								ffmpeg_proc.kill()
-							ffmpeg_proc = None
-						ffmpeg_proc = start_ffmpeg('reconnecting')
-						last_state = 'reconnecting'
-						last_key = key
-						time.sleep(1)
-						continue
-
 			# If in reconnecting state, only try to reconnect periodically
 			if state == 'reconnecting':
 				now = time.time()

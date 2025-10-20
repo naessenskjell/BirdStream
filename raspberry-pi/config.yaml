@@ -7,9 +7,24 @@ server:
   protocol: rtmp  # rtmp or custom
   timeout: 10
   reconnect:
-    max_retries: 5
-    backoff_multiplier: 2.0
-    initial_delay: 1
+    max_retries: 30  # Increased from 5 to handle multi-minute outages
+    backoff_multiplier: 1.5  # Reduced from 2.0 for faster reconnection attempts
+    initial_delay: 2  # Increased from 1 for stability
+    max_delay: 30  # Cap backoff at 30 seconds
+  
+  # Network interface monitoring
+  network:
+    monitor_enabled: true
+    check_interval: 5  # Check connectivity every 5 seconds
+    wifi_interface: wlan0  # Primary WiFi interface
+    fallback_interface: eth0  # Fallback to ethernet if available
+    ping_timeout: 3
+    
+  # Local frame buffering during outages
+  buffer:
+    enabled: true
+    max_frames: 450  # ~15 seconds at 30fps
+    memory_limit_mb: 256  # Max 256MB for frame buffer
 
 # Camera settings
 camera:
@@ -34,7 +49,10 @@ audio:
 encoder:
   type: ffmpeg
   preset: medium
-  buffer_size: 1048576  # 1MB
+  buffer_size: 4194304  # Increased from 1MB to 4MB for WiFi outages
+  rbuffer_size: 52428800  # 50MB receive buffer
+  sbuffer_size: 52428800  # 50MB send buffer
+  max_packet_size: 1316  # MTU-friendly packet size
 
 # Logging
 logging:

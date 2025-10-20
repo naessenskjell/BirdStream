@@ -35,7 +35,10 @@ class StreamEncoder:
         
         self.encoder_type = self.encoder_config.get('type', 'ffmpeg')
         self.preset = self.encoder_config.get('preset', 'medium')
-        self.buffer_size = self.encoder_config.get('buffer_size', 1048576)
+        self.buffer_size = self.encoder_config.get('buffer_size', 4194304)  # 4MB default
+        self.rbuffer_size = self.encoder_config.get('rbuffer_size', 52428800)  # 50MB receive buffer
+        self.sbuffer_size = self.encoder_config.get('sbuffer_size', 52428800)  # 50MB send buffer
+        self.max_packet_size = self.encoder_config.get('max_packet_size', 1316)
         
         self.video_capture = video_capture
         self.audio_capture = audio_capture
@@ -49,6 +52,7 @@ class StreamEncoder:
         self.last_error = None
         
         logger.info(f"Stream Encoder initialized: {self.encoder_type}")
+        logger.info(f"Buffers: main={self.buffer_size//1024//1024}MB, rbuf={self.rbuffer_size//1024//1024}MB, sbuf={self.sbuffer_size//1024//1024}MB")
     
     def start(self, output_url: str) -> bool:
         """
@@ -83,11 +87,14 @@ class StreamEncoder:
         try:
             logger.info(f"Starting FFmpeg encoder to {output_url}")
             
-            # Build FFmpeg command
-            # Input: H.264 video + AAC audio
-            # Output: RTMP stream
+            # Build FFmpeg command with WiFi-friendly buffer settings
+            # Larger buffers for WiFi outage tolerance
             cmd = [
                 'ffmpeg',
+                # Global options for reliability
+                '-rtbufsize', str(self.rbuffer_size),  # 50MB receive buffer
+                '-bufsize', str(self.sbuffer_size),    # 50MB send buffer
+                
                 # Input video (from camera capture)
                 '-f', 'mjpeg',  # Motion JPEG format
                 '-i', 'pipe:0',  # Read from stdin
@@ -103,6 +110,7 @@ class StreamEncoder:
                 '-b:v', f"{self.video_config.get('bitrate', 4000)}k",
                 '-pix_fmt', 'yuv420p',
                 '-r', str(self.video_config.get('fps', 30)),
+                '-maxrate', f"{int(self.video_config.get('bitrate', 4000) * 1.5)}k",  # Allow burst
                 
                 # Audio encoding
                 '-acodec', 'aac',
@@ -113,13 +121,16 @@ class StreamEncoder:
                 '-async', '1',  # Audio sync
                 '-vsync', '1',  # Video sync
                 
-                # Buffer settings
-                '-buffer_size', str(self.buffer_size),
+                # Additional reliability settings
+                '-fflags', 'nobuffer',  # Reduce latency
+                '-flags', 'low_delay',  # Low delay mode
+                '-max_delay', '500000',  # 500ms max delay
                 '-probesize', '32',
                 '-analyzeduration', '0',
                 
-                # RTMP settings
+                # RTMP settings with MTU-friendly packet size
                 '-flvflags', 'no_duration_filesize',
+                '-packet_size', str(self.max_packet_size),
                 
                 # Output
                 '-f', 'flv',
@@ -128,7 +139,7 @@ class StreamEncoder:
             
             logger.info(f"FFmpeg command: {' '.join(cmd)}")
             
-            # Start FFmpeg process
+            # Start FFmpeg process with large buffers
             self.process = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,

@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BirdStream - Advanced Dashboard</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+</head>
+<body>
+    <div class="dashboard">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <div class="logo">
+                    <i class="fas fa-video"></i>
+                    <h1>🐦 BirdStream</h1>
+                    <p>Advanced Live Streaming Dashboard</p>
+                </div>
+                <div class="header-status">
+                    <div id="stream-state-indicator" class="stream-indicator state-off">OFF</div>
+                    <div id="connection-indicator" class="connection-indicator disconnected">● Disconnected</div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Navigation Tabs -->
+        <nav class="tab-navigation">
+            <button class="tab-btn active" data-tab="status">
+                <i class="fas fa-signal"></i> Status
+            </button>
+            <button class="tab-btn" data-tab="metrics">
+                <i class="fas fa-chart-line"></i> Metrics
+            </button>
+            <button class="tab-btn" data-tab="logs">
+                <i class="fas fa-list"></i> Logs
+            </button>
+            <button class="tab-btn" data-tab="settings">
+                <i class="fas fa-cog"></i> Settings
+            </button>
+            <button class="tab-btn" data-tab="images">
+                <i class="fas fa-images"></i> Images
+            </button>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="content">
+            <!-- Status Tab -->
+            <section id="tab-status" class="tab-content active">
+                <div class="card-container">
+                    <div class="card">
+                        <h2>Stream Status</h2>
+                        <div id="status-panel" class="status-panel">
+                            <div class="status-item">
+                                <label>Stream State:</label>
+                                <span class="state-badge state-off">OFF</span>
+                            </div>
+                            <div class="status-item">
+                                <label>Video:</label>
+                                <span class="status-offline">✗ Offline</span>
+                            </div>
+                            <div class="status-item">
+                                <label>Audio:</label>
+                                <span class="status-offline">✗ Offline</span>
+                            </div>
+                            <div class="status-item">
+                                <label>Active Streams:</label>
+                                <span>0</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <h2>Stream Control</h2>
+                        <div class="control-panel">
+                            <button id="btn-live-mode" class="btn btn-live">
+                                <i class="fas fa-play"></i> Stream to YouTube
+                            </button>
+                            <button id="btn-static-mode" class="btn btn-static">
+                                <i class="fas fa-image"></i> Use Static Image
+                            </button>
+                            <button id="btn-off-mode" class="btn btn-off">
+                                <i class="fas fa-stop"></i> Turn Off
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <h2>Connection Info</h2>
+                        <div class="info-panel">
+                            <div class="info-item">
+                                <label>Uptime:</label>
+                                <span id="uptime">0h 0m 0s</span>
+                            </div>
+                            <div class="info-item">
+                                <label>Last Activity:</label>
+                                <span id="last-activity">Never</span>
+                            </div>
+                            <div class="info-item">
+                                <label>Connected Devices:</label>
+                                <span id="connected-devices">0</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Metrics Tab -->
+            <section id="tab-metrics" class="tab-content">
+                <div class="card">
+                    <h2>Performance Metrics</h2>
+                    <div id="metrics-panel" class="metrics-panel">
+                        <div class="metrics-item">
+                            <label>Video Bitrate:</label>
+                            <span>-- kbps</span>
+                        </div>
+                        <div class="metrics-item">
+                            <label>Audio Bitrate:</label>
+                            <span>-- kbps</span>
+                        </div>
+                        <div class="metrics-item">
+                            <label>Video Frames:</label>
+                            <span>0</span>
+                        </div>
+                        <div class="metrics-item">
+                            <label>Audio Frames:</label>
+                            <span>0</span>
+                        </div>
+                        <div class="metrics-item">
+                            <label>Reconnections:</label>
+                            <span>0</span>
+                        </div>
+                        <div class="metrics-item">
+                            <label>Fallbacks:</label>
+                            <span>0</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Bandwidth Graph</h2>
+                    <canvas id="bandwidth-chart"></canvas>
+                </div>
+
+                <div class="card">
+                    <h2>Frame Count</h2>
+                    <canvas id="frames-chart"></canvas>
+                </div>
+            </section>
+
+            <!-- Logs Tab -->
+            <section id="tab-logs" class="tab-content">
+                <div class="card">
+                    <h2>Event Logs</h2>
+                    <div class="log-controls">
+                        <select id="log-filter">
+                            <option value="">All Events</option>
+                            <option value="stream">Stream Events</option>
+                            <option value="youtube">YouTube Events</option>
+                            <option value="error">Errors</option>
+                            <option value="api">API Events</option>
+                        </select>
+                        <button id="btn-clear-logs" class="btn btn-small btn-danger">Clear Logs</button>
+                    </div>
+                    <div id="logs-panel" class="logs-panel">
+                        <p>No logs available</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Settings Tab -->
+            <section id="tab-settings" class="tab-content">
+                <div class="card">
+                    <h2>YouTube Settings</h2>
+                    <div class="form-group">
+                        <label for="youtube-key-input">Stream Key:</label>
+                        <input type="password" id="youtube-key-input" placeholder="rtmp://a.rtmp.youtube.com/live2/...">
+                        <small>Your YouTube RTMP stream key. Kept secure on server.</small>
+                    </div>
+                    <div class="form-actions">
+                        <button id="btn-save-youtube-key" class="btn btn-primary">
+                            <i class="fas fa-save"></i> Save Key
+                        </button>
+                        <button id="btn-test-youtube" class="btn btn-secondary">
+                            <i class="fas fa-check"></i> Test Connection
+                        </button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Stream Settings</h2>
+                    <div class="settings-grid">
+                        <div class="setting-item">
+                            <label>Auto Recovery:</label>
+                            <input type="checkbox" checked>
+                        </div>
+                        <div class="setting-item">
+                            <label>Image Fallback:</label>
+                            <input type="checkbox" checked>
+                        </div>
+                        <div class="setting-item">
+                            <label>Auto Refresh:</label>
+                            <input type="checkbox" id="toggle-auto-refresh" checked>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Preset Configurations</h2>
+                    <div class="presets">
+                        <button class="btn btn-small" onclick="alert('Coming in v2.0')">
+                            <i class="fas fa-save"></i> Save Current Config
+                        </button>
+                        <button class="btn btn-small" onclick="alert('Coming in v2.0')">
+                            <i class="fas fa-folder-open"></i> Load Preset
+                        </button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Images Tab -->
+            <section id="tab-images" class="tab-content">
+                <div class="card">
+                    <h2>Fallback Images</h2>
+                    <div class="upload-area">
+                        <input type="file" id="image-upload" accept="image/*" style="display: none;">
+                        <button id="btn-upload-image" class="btn btn-primary btn-upload">
+                            <i class="fas fa-cloud-upload-alt"></i> Upload Image
+                        </button>
+                        <p class="upload-hint">Max 10MB per image, 100MB total</p>
+                    </div>
+                </div>
+
+                <div id="images-panel" class="images-gallery">
+                    <p>No images uploaded yet</p>
+                </div>
+            </section>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>BirdStream v1.0 | Phase 4: Advanced Dashboard | Real-time Streaming Monitor</p>
+            <small>Made with <i class="fas fa-heart"></i> for live streaming</small>
+        </footer>
+    </div>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
+

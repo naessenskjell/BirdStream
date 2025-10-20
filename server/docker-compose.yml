@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  birdstream-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: birdstream-server
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./images:/app/images
+      - ./logs:/app/logs
+      - ./uploads:/app/uploads
+    environment:
+      - FLASK_ENV=production
+      - STREAM_BUFFER_SIZE=10485760  # 10MB
+      - RECONNECT_TIMEOUT=5
+      - LOG_LEVEL=INFO
+    networks:
+      - birdstream-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+networks:
+  birdstream-net:
+    driver: bridge

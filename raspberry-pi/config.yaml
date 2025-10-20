@@ -1,0 +1,44 @@
+# Raspberry Pi BirdStream Configuration
+
+# Server connection settings
+server:
+  host: 192.168.0.21
+  port: 5000
+  protocol: rtmp  # rtmp or custom
+  timeout: 10
+  reconnect:
+    max_retries: 5
+    backoff_multiplier: 2.0
+    initial_delay: 1
+
+# Camera settings
+camera:
+  enabled: true
+  width: 1920
+  height: 1080
+  fps: 30
+  bitrate: 4000  # kbps
+  format: h264
+  quality: high
+
+# Audio settings
+audio:
+  enabled: true
+  device: default  # USB Microphone device
+  sample_rate: 48000
+  channels: 1
+  bitrate: 128  # kbps
+  format: aac
+
+# Stream encoder settings
+encoder:
+  type: ffmpeg
+  preset: medium
+  buffer_size: 1048576  # 1MB
+
+# Logging
+logging:
+  level: INFO
+  file: /var/log/birdstream.log
+  max_size: 10485760  # 10MB
+  backup_count: 5

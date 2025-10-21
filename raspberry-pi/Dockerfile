@@ -6,17 +6,21 @@ WORKDIR /app
 
 # Install system dependencies for picamera2, pyaudio, and ffmpeg
 RUN apt-get update && apt-get install -y \
+    gcc \
+    python3-dev \
+    build-essential \
     ffmpeg \
     libjpeg-dev \
     libssl-dev \
     libffi-dev \
     libopenjp2-7 \
     libtiff6 \
-    libwebp6 \
-    libopenexr23 \
+    libwebp7 \
+    libopenexr-3-1-30 \
     libharfbuzz0b \
     libwebpmux3 \
     libopenjp2-tools \
+    libcap-dev \
     portaudio19-dev \
     alsa-utils \
     && rm -rf /var/lib/apt/lists/*

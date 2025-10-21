@@ -45,7 +45,7 @@ static_image_handler = StaticImageHandler()
 network_resilience = NetworkResilience(
     stream_handler=stream_handler,
     youtube_rtmp=youtube_rtmp,
-    static_image_handler=static_image_handler
+    static_images=static_image_handler
 )
 settings_manager = SettingsManager()
 stream_logger = StreamLogger()

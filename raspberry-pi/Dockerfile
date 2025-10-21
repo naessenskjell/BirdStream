@@ -1,6 +1,6 @@
 # Raspberry Pi Dockerfile
 # Build container for streaming camera and audio to server
-FROM python:3.9-slim
+FROM python:3.11-slim
 
 WORKDIR /app
 
@@ -23,6 +23,7 @@ RUN apt-get update && apt-get install -y \
     libcap-dev \
     portaudio19-dev \
     alsa-utils \
+    rpicam-apps \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install Python dependencies

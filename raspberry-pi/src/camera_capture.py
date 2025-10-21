@@ -2,21 +2,27 @@
 BirdStream - Camera Capture Module
 Handles video capture from Camera Module 3 Wide with H.264 encoding.
 Implements buffer management and error handling for WiFi drops.
+Supports both picamera2 (native Python) and rpicam-vid (command-line fallback).
 """
 
 import io
 import logging
 import threading
 import time
+import subprocess
+import select
 from typing import Callable, Optional
 from collections import deque
 
+# Try picamera2 first
 try:
     from picamera2 import Picamera2
     from libcamera import controls
+    PICAMERA2_AVAILABLE = True
 except ImportError:
-    logging.warning("picamera2 not available - running in simulation mode")
+    logging.warning("picamera2 not available - will use rpicam-vid fallback")
     Picamera2 = None
+    PICAMERA2_AVAILABLE = False
 
 
 logger = logging.getLogger(__name__)
@@ -135,6 +141,7 @@ class CameraCapture:
         self.quality = self.config.get('quality', 'high')
         
         self.camera = None
+        self.camera_type = None  # 'picamera2' or 'rpicam-vid'
         self.buffer = CameraBuffer(max_size=100)
         self.is_running = False
         self.capture_thread = None
@@ -150,6 +157,7 @@ class CameraCapture:
     def initialize(self) -> bool:
         """
         Initialize camera hardware.
+        Tries picamera2 first, falls back to rpicam-vid if not available.
         
         Returns:
             True if successful, False otherwise
@@ -158,12 +166,23 @@ class CameraCapture:
             logger.info("Camera capture disabled in config")
             return False
         
-        if Picamera2 is None:
-            logger.error("picamera2 library not available")
-            return False
+        # Try picamera2 first
+        if PICAMERA2_AVAILABLE:
+            if self._initialize_picamera2():
+                return True
+            logger.warning("picamera2 initialization failed, trying rpicam-vid fallback")
         
+        # Fall back to rpicam-vid
+        if self._initialize_rpicam():
+            return True
+        
+        logger.error("Both picamera2 and rpicam-vid initialization failed")
+        return False
+    
+    def _initialize_picamera2(self) -> bool:
+        """Initialize using picamera2."""
         try:
-            logger.info("Initializing camera hardware...")
+            logger.info("Initializing camera with picamera2...")
             self.camera = Picamera2()
             
             # Configure camera
@@ -182,24 +201,42 @@ class CameraCapture:
                 controls.NoiseReductionMode: controls.draft.NoiseReductionModeEnum.Automatic,
             })
             
-            logger.info("Camera hardware initialized successfully")
+            self.camera_type = 'picamera2'
+            logger.info("Camera initialized successfully with picamera2")
             return True
             
         except Exception as e:
-            logger.error(f"Failed to initialize camera: {e}")
-            self.last_error = str(e)
-            self.error_count += 1
+            logger.error(f"picamera2 initialization failed: {e}")
+            self.camera = None
+            return False
+    
+    def _initialize_rpicam(self) -> bool:
+        """Initialize using rpicam-vid command."""
+        try:
+            # Check if rpicam-vid is available
+            result = subprocess.run(['which', 'rpicam-vid'], capture_output=True)
+            if result.returncode != 0:
+                logger.error("rpicam-vid not found - ensure it's installed")
+                return False
+            
+            logger.info("Using rpicam-vid for camera capture")
+            self.camera_type = 'rpicam-vid'
+            return True
+            
+        except Exception as e:
+            logger.error(f"rpicam-vid initialization failed: {e}")
             return False
     
     def start(self) -> bool:
         """
         Start camera capture.
+        Handles both picamera2 and rpicam-vid modes.
         
         Returns:
             True if successful, False otherwise
         """
-        if not self.enabled or self.camera is None:
-            logger.error("Camera not initialized")
+        if not self.enabled:
+            logger.error("Camera not enabled")
             return False
         
         if self.is_running:
@@ -207,7 +244,28 @@ class CameraCapture:
             return False
         
         try:
-            logger.info("Starting camera capture...")
+            if self.camera_type == 'picamera2':
+                return self._start_picamera2()
+            elif self.camera_type == 'rpicam-vid':
+                return self._start_rpicam()
+            else:
+                logger.error(f"Unknown camera type: {self.camera_type}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Failed to start camera capture: {e}")
+            self.last_error = str(e)
+            self.error_count += 1
+            return False
+    
+    def _start_picamera2(self) -> bool:
+        """Start picamera2 capture."""
+        if self.camera is None:
+            logger.error("Camera not initialized")
+            return False
+        
+        try:
+            logger.info("Starting camera capture (picamera2)...")
             self.camera.start()
             
             self.is_running = True
@@ -216,18 +274,39 @@ class CameraCapture:
             
             # Start capture thread
             self.capture_thread = threading.Thread(
-                target=self._capture_loop,
+                target=self._capture_loop_picamera2,
                 daemon=True
             )
             self.capture_thread.start()
             
-            logger.info("Camera capture started")
+            logger.info("Camera capture started (picamera2)")
             return True
             
         except Exception as e:
-            logger.error(f"Failed to start camera capture: {e}")
-            self.last_error = str(e)
-            self.error_count += 1
+            logger.error(f"Failed to start picamera2: {e}")
+            return False
+    
+    def _start_rpicam(self) -> bool:
+        """Start rpicam-vid capture."""
+        try:
+            logger.info("Starting camera capture (rpicam-vid)...")
+            
+            self.is_running = True
+            self.frame_count = 0
+            self.buffer.clear()
+            
+            # Start capture thread
+            self.capture_thread = threading.Thread(
+                target=self._capture_loop_rpicam,
+                daemon=True
+            )
+            self.capture_thread.start()
+            
+            logger.info("Camera capture started (rpicam-vid)")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to start rpicam-vid: {e}")
             return False
     
     def stop(self):
@@ -242,7 +321,7 @@ class CameraCapture:
             if self.capture_thread:
                 self.capture_thread.join(timeout=5)
             
-            if self.camera:
+            if self.camera_type == 'picamera2' and self.camera:
                 self.camera.stop()
             
             logger.info("Camera capture stopped")
@@ -255,15 +334,15 @@ class CameraCapture:
         self.stop()
         
         try:
-            if self.camera:
+            if self.camera_type == 'picamera2' and self.camera:
                 self.camera.close()
                 self.camera = None
             logger.info("Camera resources cleaned up")
         except Exception as e:
             logger.error(f"Error cleaning up camera: {e}")
     
-    def _capture_loop(self):
-        """Main capture loop - runs in separate thread."""
+    def _capture_loop_picamera2(self):
+        """Main capture loop for picamera2 - runs in separate thread."""
         retry_count = 0
         max_retries = 5
         retry_delay = 1
@@ -306,7 +385,7 @@ class CameraCapture:
                 time.sleep(1 / self.fps)
                 
             except Exception as e:
-                logger.error(f"Error in capture loop: {e}")
+                logger.error(f"Error in picamera2 capture loop: {e}")
                 self.error_count += 1
                 self.last_error = str(e)
                 
@@ -318,7 +397,95 @@ class CameraCapture:
                 
                 logger.info(f"Retrying capture in {retry_delay}s (attempt {retry_count}/{max_retries})")
                 time.sleep(retry_delay)
-                retry_delay = min(retry_delay * 2, 10)  # Exponential backoff up to 10s
+                retry_delay = min(retry_delay * 2, 10)
+    
+    def _capture_loop_rpicam(self):
+        """Main capture loop for rpicam-vid - runs in separate thread."""
+        retry_count = 0
+        max_retries = 5
+        retry_delay = 1
+        
+        while self.is_running:
+            try:
+                # Build rpicam-vid command
+                cmd = [
+                    'rpicam-vid',
+                    '-t', '0',           # Run forever
+                    '--inline',          # Output to stdout
+                    '--width', str(self.width),
+                    '--height', str(self.height),
+                    '--framerate', str(self.fps),
+                    '-o', '-'            # Output to stdout
+                ]
+                
+                logger.info(f"Starting rpicam-vid: {' '.join(cmd)}")
+                
+                # Start process
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    bufsize=0
+                )
+                
+                # Read stream
+                while self.is_running and process.poll() is None:
+                    timestamp = time.time()
+                    
+                    # Read frame data (H.264)
+                    # rpicam-vid outputs H.264 encoded frames
+                    # Each frame starts with specific markers (NALU start codes)
+                    frame_data = b''
+                    try:
+                        # Use select to avoid blocking
+                        ready = select.select([process.stdout], [], [], 0.1)
+                        if ready[0]:
+                            # Read some data
+                            chunk = process.stdout.read(65536)  # 64KB chunks
+                            if not chunk:
+                                break
+                            frame_data += chunk
+                            
+                            # Add to buffer if we have data
+                            if frame_data:
+                                self.buffer.put(frame_data, timestamp)
+                                self.frame_count += 1
+                                
+                                # Call callback if set
+                                if self.on_frame_callback:
+                                    try:
+                                        self.on_frame_callback(frame_data, timestamp)
+                                    except Exception as e:
+                                        logger.error(f"Error in frame callback: {e}")
+                    except Exception as e:
+                        logger.error(f"Error reading from rpicam-vid: {e}")
+                        break
+                
+                # Clean up
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                
+                # Reset retry count on success
+                retry_count = 0
+                
+            except Exception as e:
+                logger.error(f"Error in rpicam-vid capture loop: {e}")
+                self.error_count += 1
+                self.last_error = str(e)
+                
+                retry_count += 1
+                if retry_count > max_retries:
+                    logger.error("Max retries exceeded, stopping capture")
+                    self.is_running = False
+                    break
+                
+                logger.info(f"Retrying capture in {retry_delay}s (attempt {retry_count}/{max_retries})")
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 10)
     
     def get_frame(self) -> Optional[bytes]:
         """

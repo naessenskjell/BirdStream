@@ -480,16 +480,42 @@ class CameraCapture:
                         logger.error(f"Error reading from rpicam-vid: {e}")
                         break
                 
-                # Clean up
-                if process.poll() is None:
+                # Clean up and check exit code
+                rc = process.poll()
+                if rc is None:
                     process.terminate()
                     try:
                         process.wait(timeout=2)
                     except subprocess.TimeoutExpired:
                         process.kill()
-                
-                # Reset retry count on success
+                    rc = process.poll()
+
+                if rc is not None and rc != 0:
+                    # Process exited with error — capture stderr for diagnostics
+                    stderr = ''
+                    try:
+                        if process.stderr:
+                            stderr = process.stderr.read().decode(errors='ignore')
+                    except Exception:
+                        stderr = '<failed to read stderr>'
+
+                    logger.error(f"rpicam-vid exited with code {rc}. Stderr: {stderr[:1000]}")
+
+                    # Treat as failure and back off before retrying to avoid log spam
+                    retry_count += 1
+                    if retry_count > max_retries:
+                        logger.error("Max retries exceeded, stopping capture")
+                        self.is_running = False
+                        break
+
+                    logger.info(f"rpicam-vid will be restarted in {retry_delay}s (attempt {retry_count}/{max_retries})")
+                    time.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 10)
+                    continue
+
+                # Successful run — reset retry/backoff
                 retry_count = 0
+                retry_delay = 1
                 
             except Exception as e:
                 logger.error(f"Error in rpicam-vid capture loop: {e}")

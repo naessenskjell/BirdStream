@@ -34,7 +34,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Create Flask app with SocketIO
-app = Flask(__name__, static_folder='static', template_folder='templates')
+app = Flask(__name__, static_folder='static', template_folder='static')
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max upload
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'birdstream-dev-key')
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
@@ -194,8 +194,9 @@ def broadcast_updates():
                 stream_info = stream_handler.get_status()
                 metrics = metrics_collector.get_metrics()
                 
-                # Broadcast to all connected clients
-                socketio.emit('realtime_update', {
+                # Broadcast to all connected clients. Some socket.io installs don't accept
+                # the `broadcast` kwarg here, so emit to each client's room instead.
+                payload = {
                     'timestamp': datetime.now().isoformat(),
                     'stream_state': current_state.value,
                     'video_ok': stream_info.get('video_ok', False),
@@ -205,7 +206,14 @@ def broadcast_updates():
                     'video_frames': metrics['video']['frames'],
                     'audio_frames': metrics['audio']['frames'],
                     'active_streams': len(stream_info.get('connections', {})),
-                }, broadcast=True)
+                }
+
+                # Emit to each connected client by room (session id)
+                for cid in list(connected_clients):
+                    try:
+                        socketio.emit('realtime_update', payload, room=cid)
+                    except Exception as e:
+                        stream_logger.log_event('ERROR', 'broadcast', f'Emit to {cid} failed: {e}')
             
             sleep(1)  # Update every 1 second
             

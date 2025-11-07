@@ -5,9 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=pi
-WorkingDirectory=/home/pi/Documents/GitHub/BirdStream/raspberry-pi
-ExecStart=/home/pi/Documents/GitHub/BirdStream/raspberry-pi/venv/bin/python /home/pi/Documents/GitHub/BirdStream/raspberry-pi/src/main.py
+# Run service as the local user that owns the repository. Adjust if you use a different account.
+User=admin
+WorkingDirectory=/home/admin/BirdStream/raspberry-pi
+ExecStart=/home/admin/BirdStream/raspberry-pi/venv/bin/python /home/admin/BirdStream/raspberry-pi/src/main.py
 Restart=on-failure
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1

@@ -213,14 +213,32 @@ class CameraCapture:
     def _initialize_rpicam(self) -> bool:
         """Initialize using rpicam-vid command."""
         try:
-            # Check if rpicam-vid is available
-            result = subprocess.run(['which', 'rpicam-vid'], capture_output=True)
-            if result.returncode != 0:
-                logger.error("rpicam-vid not found - ensure it's installed")
+            # Try to find rpicam-vid in multiple locations
+            rpicam_paths = [
+                '/usr/bin/rpicam-vid',
+                '/usr/local/bin/rpicam-vid',
+                'rpicam-vid'  # Fallback to PATH lookup
+            ]
+            
+            rpicam_vid_path = None
+            for path in rpicam_paths:
+                try:
+                    result = subprocess.run([path, '--version'], capture_output=True, timeout=2)
+                    if result.returncode == 0:
+                        rpicam_vid_path = path
+                        logger.info(f"Found rpicam-vid at: {path}")
+                        break
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    continue
+            
+            if not rpicam_vid_path:
+                logger.error("rpicam-vid not found in any location - ensure it's installed")
                 return False
             
-            logger.info("Using rpicam-vid for camera capture")
+            # Store the path for later use
+            self.rpicam_vid_path = rpicam_vid_path
             self.camera_type = 'rpicam-vid'
+            logger.info("rpicam-vid initialization successful")
             return True
             
         except Exception as e:
@@ -407,9 +425,10 @@ class CameraCapture:
         
         while self.is_running:
             try:
-                # Build rpicam-vid command
+                # Build rpicam-vid command using the full path found during init
+                rpicam_path = getattr(self, 'rpicam_vid_path', 'rpicam-vid')
                 cmd = [
-                    'rpicam-vid',
+                    rpicam_path,
                     '-t', '0',           # Run forever
                     '--inline',          # Output to stdout
                     '--width', str(self.width),

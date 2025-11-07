@@ -7,7 +7,7 @@ server:
   protocol: rtmp  # rtmp or custom
   timeout: 10
   reconnect:
-    max_retries: 30  # Increased from 5 to handle multi-minute outages
+    max_retries: 30  # Handle multi-minute outages
     backoff_multiplier: 1.5  # Reduced from 2.0 for faster reconnection attempts
     initial_delay: 2  # Increased from 1 for stability
     max_delay: 30  # Cap backoff at 30 seconds

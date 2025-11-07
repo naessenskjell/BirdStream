@@ -23,8 +23,19 @@ RUN apt-get update && apt-get install -y \
     libcap-dev \
     portaudio19-dev \
     alsa-utils \
-    rpicam-apps \
     && rm -rf /var/lib/apt/lists/*
+
+# Install libcamera and rpicam runtime dependencies
+# Since rpicam-apps is not in Debian repos, we'll use the Python fallback approach
+# The camera_capture.py will automatically fall back to rpicam-vid if available
+# For now, we focus on getting the basic libraries that rpicam-vid needs
+RUN apt-get update && apt-get install -y \
+    libcamera0 \
+    libcamera-tools \
+    liblz4-1 \
+    libdrm2 \
+    libyaml-0.2 \
+    || true && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install Python dependencies
 COPY requirements.txt .

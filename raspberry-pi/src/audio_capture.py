@@ -253,8 +253,7 @@ class AudioCapture:
                 rate=self.sample_rate,
                 input=True,
                 input_device_index=self.device_index,
-                frames_per_buffer=self.CHUNK_SIZE,
-                exceptions=False
+                frames_per_buffer=self.CHUNK_SIZE
             )
             
             self.is_running = True

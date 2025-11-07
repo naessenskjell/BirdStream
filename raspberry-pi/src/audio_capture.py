@@ -132,11 +132,11 @@ class AudioCapture:
         self.bitrate = self.config.get('bitrate', 128) * 1000  # Convert to bps
         self.format = self.config.get('format', 'aac')
         
-    # PyAudio constants
-    self.CHUNK_SIZE = 2048  # Frames per buffer
-    # Use the PyAudio constant when available; fallback to numeric value
-    self.AUDIO_FORMAT = pyaudio.paInt16 if pyaudio is not None else 2  # paInt16 (16-bit)
-    self.SAMPLE_WIDTH = 2  # Bytes per sample
+        # PyAudio constants
+        self.CHUNK_SIZE = 2048  # Frames per buffer
+        # Use the PyAudio constant when available; fallback to numeric value
+        self.AUDIO_FORMAT = pyaudio.paInt16 if pyaudio is not None else 2  # paInt16 (16-bit)
+        self.SAMPLE_WIDTH = 2  # Bytes per sample
         
         self.audio = None
         self.stream = None

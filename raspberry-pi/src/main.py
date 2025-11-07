@@ -76,18 +76,25 @@ class BirdStreamApp:
                 logger.error("Failed to initialize camera")
                 return False
             
-            if not self.audio.initialize():
-                logger.error("Failed to initialize audio")
-                return False
+            # Initialize audio only if enabled in config
+            if self.audio.enabled:
+                if not self.audio.initialize():
+                    logger.error("Failed to initialize audio")
+                    return False
+            else:
+                logger.info("Audio capture disabled in config; skipping audio initialization")
             
             # Start capture
             if not self.camera.start():
                 logger.error("Failed to start camera capture")
                 return False
             
-            if not self.audio.start():
-                logger.error("Failed to start audio capture")
-                return False
+            if self.audio.enabled:
+                if not self.audio.start():
+                    logger.error("Failed to start audio capture")
+                    return False
+            else:
+                logger.info("Audio capture disabled in config; skipping audio start")
             
             # Connect to server
             if not self.network.connect():

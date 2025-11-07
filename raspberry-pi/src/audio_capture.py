@@ -132,10 +132,11 @@ class AudioCapture:
         self.bitrate = self.config.get('bitrate', 128) * 1000  # Convert to bps
         self.format = self.config.get('format', 'aac')
         
-        # PyAudio constants
-        self.CHUNK_SIZE = 2048  # Frames per buffer
-        self.AUDIO_FORMAT = 2  # paInt16 (16-bit)
-        self.SAMPLE_WIDTH = 2  # Bytes per sample
+    # PyAudio constants
+    self.CHUNK_SIZE = 2048  # Frames per buffer
+    # Use the PyAudio constant when available; fallback to numeric value
+    self.AUDIO_FORMAT = pyaudio.paInt16 if pyaudio is not None else 2  # paInt16 (16-bit)
+    self.SAMPLE_WIDTH = 2  # Bytes per sample
         
         self.audio = None
         self.stream = None
@@ -162,33 +163,49 @@ class AudioCapture:
         if pyaudio is None:
             logger.error("PyAudio not available")
             return None
-        
+
         try:
             p = pyaudio.PyAudio()
             device_count = p.get_device_count()
-            
+
             logger.info(f"Found {device_count} audio devices")
-            
-            # If looking for default, use PyAudio's default
+
+            # If looking for default, try PyAudio's default first
             if self.device_name == 'default':
-                idx = p.get_default_input_device_info()['index']
-                logger.info(f"Using default audio device: index {idx}")
-                p.terminate()
-                return idx
-            
-            # Search for device by name
-            for i in range(device_count):
-                info = p.get_device_info_by_index(i)
-                if self.device_name.lower() in info['name'].lower():
-                    logger.info(f"Found device '{info['name']}' at index {i}")
+                try:
+                    default_info = p.get_default_input_device_info()
+                    idx = default_info.get('index')
+                    logger.info(f"Using default audio device: index {idx}")
                     p.terminate()
-                    return i
-            
-            logger.warning(f"Device '{self.device_name}' not found, using default")
-            idx = p.get_default_input_device_info()['index']
+                    return idx
+                except Exception:
+                    # Fall through to picking the first available input-capable device
+                    logger.warning("No PyAudio default input device available, enumerating devices")
+
+            # Search for device by name if specified
+            if self.device_name != 'default':
+                for i in range(device_count):
+                    info = p.get_device_info_by_index(i)
+                    if self.device_name.lower() in info.get('name', '').lower():
+                        logger.info(f"Found device '{info['name']}' at index {i}")
+                        p.terminate()
+                        return i
+
+            # If we get here, pick the first device that supports input
+            for i in range(device_count):
+                try:
+                    info = p.get_device_info_by_index(i)
+                    if int(info.get('maxInputChannels', 0)) > 0:
+                        logger.info(f"Selecting input-capable device '{info.get('name')}' at index {i}")
+                        p.terminate()
+                        return i
+                except Exception:
+                    continue
+
+            logger.error("No input-capable audio device found")
             p.terminate()
-            return idx
-            
+            return None
+
         except Exception as e:
             logger.error(f"Error finding audio device: {e}")
             return None
@@ -210,18 +227,63 @@ class AudioCapture:
         
         try:
             logger.info("Initializing audio hardware...")
-            
+
             # Find device
             self.device_index = self.find_device()
             if self.device_index is None:
+                logger.error("No audio device index found during initialization")
                 return False
-            
+
             # Initialize PyAudio
             self.audio = pyaudio.PyAudio()
-            
+
+            # Probe supported sample rates for the chosen device and select one that works
+            try:
+                info = self.audio.get_device_info_by_index(self.device_index)
+                device_default_rate = int(info.get('defaultSampleRate', 0))
+            except Exception:
+                device_default_rate = 0
+
+            tried_rates = []
+            # Candidate rates: configured, device default, common rates
+            candidates = [self.sample_rate]
+            if device_default_rate and device_default_rate not in candidates:
+                candidates.append(device_default_rate)
+            for r in (48000, 44100):
+                if r not in candidates:
+                    candidates.append(r)
+
+            selected_rate = None
+            for rate in candidates:
+                if rate in tried_rates:
+                    continue
+                tried_rates.append(rate)
+                try:
+                    supported = self.audio.is_format_supported(
+                        rate,
+                        input_device=self.device_index,
+                        input_channels=self.channels,
+                        input_format=self.AUDIO_FORMAT
+                    )
+                    if supported:
+                        selected_rate = rate
+                        logger.info(f"Audio device {self.device_index} supports rate {rate}")
+                        break
+                except Exception as e:
+                    logger.debug(f"Rate {rate} not supported for device {self.device_index}: {e}")
+
+            if selected_rate is None:
+                logger.error(f"None of the candidate sample rates are supported on device {self.device_index}: {candidates}")
+                return False
+
+            # Apply selected rate
+            if selected_rate != self.sample_rate:
+                logger.warning(f"Configured sample_rate {self.sample_rate} not supported; switching to {selected_rate}")
+                self.sample_rate = selected_rate
+
             logger.info("Audio hardware initialized successfully")
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to initialize audio: {e}")
             self.last_error = str(e)

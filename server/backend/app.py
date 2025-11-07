@@ -16,6 +16,7 @@ from flask_socketio import SocketIO, emit, join_room, leave_room
 from werkzeug.utils import secure_filename
 from datetime import datetime
 from time import sleep
+import socket
 
 # Import Phase 3 modules
 from stream_handler import StreamHandler, StreamBuffer
@@ -58,22 +59,22 @@ broadcast_thread = None
 broadcast_active = False
 
 # State callbacks for UI updates
-def on_stream_state_changed(new_state: StreamState):
-    """Handle stream state changes."""
+def on_stream_state_changed(old_state: StreamState, new_state: StreamState, reason: str = ""):
+    """Handle stream state changes (callback signature: old_state, new_state, reason)."""
     stream_logger.log_event(
         'INFO',
         'state_change',
-        f'Stream state changed to {new_state.value}',
-        {'new_state': new_state.value}
+        f'Stream state changed: {old_state.value} -> {new_state.value} ({reason})',
+        {'old_state': old_state.value, 'new_state': new_state.value, 'reason': reason}
     )
-    
+
     if new_state == StreamState.LIVE:
         connection_stats.record_new_connection()
     elif new_state in [StreamState.RECONNECTING, StreamState.ERROR, StreamState.OFF]:
         connection_stats.record_disconnection()
 
-# Register state change callback
-network_resilience.on_state_changed = on_stream_state_changed
+# Register state change callback (use the name expected by NetworkResilience)
+network_resilience.on_state_change = on_stream_state_changed
 
 # Load YouTube key if available
 youtube_key = settings_manager.get('youtube_stream_key')
@@ -118,7 +119,7 @@ def handle_disconnect():
 def handle_status_request():
     """Handle status request from client."""
     current_state = network_resilience.current_state
-    stream_info = stream_handler.get_active_streams()
+    stream_info = stream_handler.get_status()
     
     emit('status_update', {
         'timestamp': datetime.now().isoformat(),
@@ -134,7 +135,7 @@ def handle_status_request():
 def handle_metrics_request():
     """Handle metrics request from client."""
     metrics = metrics_collector.get_metrics()
-    stream_info = stream_handler.get_active_streams()
+    stream_info = stream_handler.get_status()
     
     emit('metrics_update', {
         'timestamp': datetime.now().isoformat(),
@@ -190,7 +191,7 @@ def broadcast_updates():
             if connected_clients:
                 # Get current status
                 current_state = network_resilience.current_state
-                stream_info = stream_handler.get_active_streams()
+                stream_info = stream_handler.get_status()
                 metrics = metrics_collector.get_metrics()
                 
                 # Broadcast to all connected clients
@@ -238,7 +239,7 @@ def stop_broadcast_thread():
 def api_status():
     """Get current stream status."""
     current_state = network_resilience.current_state
-    stream_info = stream_handler.get_active_streams()
+    stream_info = stream_handler.get_status()
     
     stream_logger.log_event('INFO', 'api', 'Status request received')
     
@@ -255,7 +256,7 @@ def api_status():
 @app.route('/api/stream/health', methods=['GET'])
 def api_stream_health():
     """Get stream health details."""
-    stream_info = stream_handler.get_active_streams()
+    stream_info = stream_handler.get_status()
     metrics = metrics_collector.get_metrics()
     
     stream_logger.log_event('INFO', 'api', 'Health check request received')
@@ -413,7 +414,7 @@ def api_metrics():
     """Get performance metrics."""
     try:
         metrics = metrics_collector.get_metrics()
-        stream_info = stream_handler.get_active_streams()
+        stream_info = stream_handler.get_status()
         
         return jsonify({
             'timestamp': datetime.now().isoformat(),
@@ -425,6 +426,37 @@ def api_metrics():
         })
     except Exception as e:
         stream_logger.log_event('ERROR', 'metrics', f'Error getting metrics: {str(e)}')
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/debug', methods=['GET'])
+def api_debug():
+    """Return basic server debug information: hostname and IP addresses."""
+    try:
+        hostname = socket.gethostname()
+        try:
+            host_info = socket.gethostbyname_ex(hostname)
+            ips = host_info[2]
+        except Exception:
+            # Fallback: try to enumerate interfaces
+            ips = []
+            try:
+                for iface in socket.getaddrinfo(hostname, None):
+                    ip = iface[4][0]
+                    if ip not in ips:
+                        ips.append(ip)
+            except Exception:
+                pass
+
+        return jsonify({
+            'hostname': hostname,
+            'ip_addresses': ips,
+            'listening_port': 5000,
+            'pid': os.getpid(),
+            'timestamp': datetime.now().isoformat(),
+        })
+    except Exception as e:
+        stream_logger.log_event('ERROR', 'debug', f'Error in debug endpoint: {e}')
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 

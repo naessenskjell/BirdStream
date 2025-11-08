@@ -3,7 +3,8 @@
 # Server connection settings
 server:
   host: 192.168.0.21
-  port: 5000
+  port: 1935
+  app: live
   protocol: rtmp  # rtmp or custom
   timeout: 10
   reconnect:

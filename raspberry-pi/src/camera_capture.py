@@ -187,19 +187,58 @@ class CameraCapture:
             
             # Configure camera
             config = self.camera.create_video_configuration(
-                main={"size": (self.width, self.height), "format": "YUV420"}
+                main={"size": (self.width, self.height), "format": "RGB888"}
             )
             self.camera.configure(config)
             
-            # Set camera controls
-            self.camera.set_controls({
-                controls.FrameRate: self.fps,
-                controls.Brightness: 0,
-                controls.Contrast: 1.0,
-                controls.Saturation: 1.0,
-                controls.Sharpness: 1.0,
-                controls.NoiseReductionMode: controls.draft.NoiseReductionModeEnum.Automatic,
-            })
+            # Set camera controls where supported by the installed libcamera controls
+            controls_to_set = {}
+
+            def try_add_control(ctrl_name, value, enum_path=None):
+                """Helper to add a control if it exists in the libcamera.controls module.
+
+                enum_path: optional tuple of attribute path (e.g. ('draft','NoiseReductionModeEnum','Automatic'))
+                """
+                try:
+                    ctrl_obj = getattr(controls, ctrl_name)
+                except Exception:
+                    logger.debug(f"Control {ctrl_name} not available in libcamera.controls; skipping")
+                    return
+
+                if enum_path:
+                    try:
+                        enum_mod = getattr(controls, enum_path[0], None)
+                        enum_cls = getattr(enum_mod, enum_path[1], None) if enum_mod is not None else None
+                        enum_val = getattr(enum_cls, enum_path[2], None) if enum_cls is not None else None
+                        if enum_val is not None:
+                            controls_to_set[ctrl_obj] = enum_val
+                            return
+                        else:
+                            logger.debug(f"Enum {enum_path} not found; skipping {ctrl_name}")
+                            return
+                    except Exception:
+                        logger.debug(f"Failed to resolve enum path for {ctrl_name}; skipping")
+                        return
+
+                # regular numeric/string control
+                controls_to_set[ctrl_obj] = value
+
+            # Try adding common controls safely
+            try_add_control('FrameRate', int(self.fps))
+            try_add_control('Brightness', 0)
+            try_add_control('Contrast', 1.0)
+            try_add_control('Saturation', 1.0)
+            try_add_control('Sharpness', 1.0)
+            # Noise reduction enum may live under controls.draft
+            try_add_control('NoiseReductionMode', None, enum_path=('draft', 'NoiseReductionModeEnum', 'Automatic'))
+
+            if controls_to_set:
+                try:
+                    self.camera.set_controls(controls_to_set)
+                except Exception as e:
+                    logger.warning(f"Setting some camera controls failed or not supported: {e}")
+            else:
+                logger.debug("No compatible libcamera controls found; skipping set_controls")
             
             self.camera_type = 'picamera2'
             logger.info("Camera initialized successfully with picamera2")

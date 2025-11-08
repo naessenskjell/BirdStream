@@ -16,7 +16,7 @@ echo "Repository directory: $REPO_DIR"
 
 echo "Updating apt and installing required packages (may ask for sudo)..."
 sudo apt-get update
-sudo apt-get install -y python3-venv python3-pip ffmpeg libjpeg-dev libopenjp2-7 libtiff6 libwebp7 libavcodec-extra libcap-dev portaudio19-dev --no-install-recommends
+sudo apt-get install -y python3-venv python3-pip ffmpeg libjpeg-dev libopenjp2-7 libtiff6 libwebp7 libavcodec-extra libcap-dev portaudio19-dev libcamera-dev libcamera-apps libcamera-tools --no-install-recommends
 # Ensure libcamera tools and rpicam are installed on host (optional but recommended)
 sudo apt-get install -y libcamera-apps rpicam-apps || true
 

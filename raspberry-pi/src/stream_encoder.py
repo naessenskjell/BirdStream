@@ -94,58 +94,89 @@ class StreamEncoder:
                 # Global options for reliability
                 '-rtbufsize', str(self.rbuffer_size),  # 50MB receive buffer
                 '-bufsize', str(self.sbuffer_size),    # 50MB send buffer
-                
-                # Input video (from camera capture)
+            ]
+
+            # Input video (from camera capture) - we send JPEG frames to stdin
+            cmd += [
                 '-f', 'mjpeg',  # Motion JPEG format
                 '-i', 'pipe:0',  # Read from stdin
-                # Input audio (from audio capture)
-                '-f', 's16le',  # Raw PCM format
-                '-ar', str(self.audio_config.get('sample_rate', 48000)),
-                '-ac', str(self.audio_config.get('channels', 1)),
-                '-i', 'pipe:3',  # Read from pipe 3
-                
-                # Video encoding
+            ]
+
+            # Optionally include audio input only if audio is enabled
+            include_audio = bool(self.audio_config.get('enabled', True) and getattr(self.audio_capture, 'enabled', True))
+            if include_audio:
+                cmd += [
+                    '-f', 's16le',  # Raw PCM format
+                    '-ar', str(self.audio_config.get('sample_rate', 48000)),
+                    '-ac', str(self.audio_config.get('channels', 1)),
+                    '-i', 'pipe:3',  # Note: external audio piping not yet implemented
+                ]
+
+            # Video encoding
+            cmd += [
                 '-vcodec', 'libx264',
                 '-preset', self.preset,
                 '-b:v', f"{self.video_config.get('bitrate', 4000)}k",
                 '-pix_fmt', 'yuv420p',
                 '-r', str(self.video_config.get('fps', 30)),
                 '-maxrate', f"{int(self.video_config.get('bitrate', 4000) * 1.5)}k",  # Allow burst
-                
-                # Audio encoding
-                '-acodec', 'aac',
-                '-b:a', f"{self.audio_config.get('bitrate', 128)}k",
-                '-ar', str(self.audio_config.get('sample_rate', 48000)),
-                
-                # Sync settings
+            ]
+
+            # Audio encoding (only if included)
+            if include_audio:
+                cmd += [
+                    '-acodec', 'aac',
+                    '-b:a', f"{self.audio_config.get('bitrate', 128)}k",
+                    '-ar', str(self.audio_config.get('sample_rate', 48000)),
+                ]
+
+            # Sync settings
+            cmd += [
                 '-async', '1',  # Audio sync
                 '-vsync', '1',  # Video sync
-                
-                # Additional reliability settings
+            ]
+
+            # Additional reliability settings
+            cmd += [
                 '-fflags', 'nobuffer',  # Reduce latency
                 '-flags', 'low_delay',  # Low delay mode
                 '-max_delay', '500000',  # 500ms max delay
                 '-probesize', '32',
                 '-analyzeduration', '0',
-                
-                # RTMP settings with MTU-friendly packet size
+            ]
+
+            # RTMP settings with MTU-friendly packet size
+            cmd += [
                 '-flvflags', 'no_duration_filesize',
                 '-packet_size', str(self.max_packet_size),
-                
-                # Output
-                '-f', 'flv',
-                output_url,
             ]
+
+            # Output
+            cmd += ['-f', 'flv', output_url]
             
             logger.info(f"FFmpeg command: {' '.join(cmd)}")
             
             # Start FFmpeg process with large buffers
+            # Note: we only provide stdin for video; audio piping is not implemented yet.
             self.process = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 bufsize=self.buffer_size
             )
+
+            # Start a thread to read FFmpeg stderr so we capture runtime errors
+            def _stderr_reader(proc):
+                try:
+                    for line in iter(proc.stderr.readline, b''):
+                        try:
+                            logger.debug(f"ffmpeg: {line.decode().rstrip()}")
+                        except Exception:
+                            logger.debug("ffmpeg: <non-decodable line>")
+                except Exception as e:
+                    logger.debug(f"FFmpeg stderr reader exited: {e}")
+
+            threading.Thread(target=_stderr_reader, args=(self.process,), daemon=True).start()
             
             self.is_running = True
             

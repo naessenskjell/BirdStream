@@ -32,7 +32,9 @@ class NetworkStream:
         """
         self.server_config = config.get('server', {})
         self.host = self.server_config.get('host', 'localhost')
-        self.port = self.server_config.get('port', 5000)
+        # New: separate API (HTTP) and RTMP ports. Backwards-compatible with `port`.
+        self.api_port = self.server_config.get('api_port', self.server_config.get('port', 5000))
+        self.rtmp_port = self.server_config.get('rtmp_port', 1935)
         self.protocol = self.server_config.get('protocol', 'rtmp')
         self.timeout = self.server_config.get('timeout', 10)
         
@@ -80,7 +82,7 @@ class NetworkStream:
         self.wifi_reconnections = 0
         self.network_interface = self.wifi_interface  # Track active interface
         
-        logger.info(f"Network Stream initialized: {self.host}:{self.port} ({self.protocol})")
+        logger.info(f"Network Stream initialized: api={self.host}:{self.api_port} rtmp={self.host}:{self.rtmp_port} ({self.protocol})")
         logger.info(f"Buffer: {self.max_buffer_frames} frames, {self.max_buffer_memory_mb}MB max")
         logger.info(f"Network monitoring: {self.network_monitor_enabled} ({self.wifi_interface})")
     
@@ -123,6 +125,18 @@ class NetworkStream:
             return result.returncode == 0
         except Exception as e:
             logger.debug(f"Ping check failed: {e}")
+            return False
+
+    def _is_rtmp_port_open(self) -> bool:
+        """
+        Check whether the RTMP TCP port is reachable (simple TCP connect).
+        Returns True if a TCP connection to RTMP port can be established.
+        """
+        try:
+            with socket.create_connection((self.host, self.rtmp_port), timeout=3):
+                return True
+        except Exception as e:
+            logger.debug(f"RTMP TCP check failed: {e}")
             return False
     
     def monitor_network(self):
@@ -241,29 +255,40 @@ class NetworkStream:
             return True
         
         try:
-            logger.info(f"Connecting to {self.host}:{self.port}...")
-            
-            # Test connection to server
-            response = requests.get(
-                f"http://{self.host}:{self.port}/health",
-                timeout=self.timeout
-            )
-            
-            if response.status_code == 200:
-                logger.info("Successfully connected to server")
+            logger.info(f"Connecting to API {self.host}:{self.api_port} (RTMP {self.host}:{self.rtmp_port})...")
+
+            # Primary health check: HTTP API
+            health_url = f"http://{self.host}:{self.api_port}/health"
+            try:
+                response = requests.get(health_url, timeout=self.timeout)
+                if response.status_code == 200:
+                    logger.info("API health check passed — connected to server API")
+                    self.is_connected = True
+                    self.last_connected_time = time.time()
+                    self.connection_attempts = 0
+
+                    # Send any buffered frames when reconnected
+                    buffered = self.get_buffered_frames()
+                    if buffered:
+                        logger.info(f"Ready to send {len(buffered)} buffered frames")
+
+                    return True
+                else:
+                    logger.warning(f"API health check returned status {response.status_code}")
+            except Exception as http_err:
+                logger.debug(f"API health check failed: {http_err}")
+
+            # Fallback: simple TCP check to RTMP port (non-HTTP)
+            if self._is_rtmp_port_open():
+                logger.info("RTMP TCP port reachable (connected at TCP level); treating as connected")
                 self.is_connected = True
                 self.last_connected_time = time.time()
                 self.connection_attempts = 0
-                
-                # Send any buffered frames when reconnected
-                buffered = self.get_buffered_frames()
-                if buffered:
-                    logger.info(f"Ready to send {len(buffered)} buffered frames")
-                
                 return True
-            else:
-                raise Exception(f"Server returned status {response.status_code}")
-                
+
+            # If both checks failed
+            raise Exception("API health and RTMP TCP checks failed")
+
         except Exception as e:
             logger.error(f"Failed to connect to server: {e}")
             self.last_error = str(e)
@@ -391,7 +416,7 @@ class NetworkStream:
                 # Periodic health check
                 try:
                     response = requests.get(
-                        f"http://{self.host}:{self.port}/api/status",
+                        f"http://{self.host}:{self.api_port}/api/status",
                         timeout=self.timeout
                     )
                     if response.status_code != 200:
@@ -424,7 +449,7 @@ class NetworkStream:
         
         try:
             response = requests.post(
-                f"http://{self.host}:{self.port}/api/stream/metadata",
+                f"http://{self.host}:{self.api_port}/api/stream/metadata",
                 json=metadata,
                 timeout=self.timeout
             )
@@ -470,7 +495,9 @@ class NetworkStream:
         return {
             'connected': self.is_connected,
             'running': self.is_running,
-            'server': f"{self.host}:{self.port}",
+            'server': f"{self.host}:{self.api_port}",
+            'server_api': f"{self.host}:{self.api_port}",
+            'server_rtmp': f"{self.host}:{self.rtmp_port}",
             'protocol': self.protocol,
             'frames_sent': self.frames_sent,
             'bytes_sent': self.bytes_sent,

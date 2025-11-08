@@ -96,14 +96,16 @@ class BirdStreamApp:
             else:
                 logger.info("Audio capture disabled in config; skipping audio start")
             
-            # Connect to server
+            # Connect to server (network.connect will check API / RTMP)
             if not self.network.connect():
                 logger.error("Failed to connect to server")
                 self.stop()
                 return False
-            
             # Start streaming
-            server_url = f"rtmp://{self.config['server']['host']}:{self.config['server']['port']}/live"
+            # Use explicit rtmp_port if present, otherwise fall back to legacy 'port'
+            server_host = self.config['server'].get('host')
+            server_rtmp_port = self.config['server'].get('rtmp_port', self.config['server'].get('port', 1935))
+            server_url = f"rtmp://{server_host}:{server_rtmp_port}/live"
             if not self.encoder.start(server_url):
                 logger.error("Failed to start encoder")
                 self.stop()

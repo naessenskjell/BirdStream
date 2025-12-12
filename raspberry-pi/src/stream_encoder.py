@@ -91,9 +91,11 @@ class StreamEncoder:
             # Larger buffers for WiFi outage tolerance
             cmd = [
                 'ffmpeg',
+                # Verbose logging to help diagnose RTMP I/O errors
+                '-loglevel', 'debug',
                 # Global options for reliability
                 '-rtbufsize', str(self.rbuffer_size),  # 50MB receive buffer
-                '-bufsize', str(self.sbuffer_size),    # 50MB send buffer
+                # NOTE: '-bufsize' is an encoding/output option — placed later before the output
             ]
 
             # Input video (from camera capture) - we send JPEG frames to stdin
@@ -103,14 +105,11 @@ class StreamEncoder:
             ]
 
             # Optionally include audio input only if audio is enabled
-            include_audio = bool(self.audio_config.get('enabled', True) and getattr(self.audio_capture, 'enabled', True))
-            if include_audio:
-                cmd += [
-                    '-f', 's16le',  # Raw PCM format
-                    '-ar', str(self.audio_config.get('sample_rate', 48000)),
-                    '-ac', str(self.audio_config.get('channels', 1)),
-                    '-i', 'pipe:3',  # Note: external audio piping not yet implemented
-                ]
+            # Audio piping to a separate fd (pipe:3) is not implemented in this encoder
+            # Disable passing a separate audio input to FFmpeg for now to avoid it waiting on a missing pipe.
+            include_audio = False
+            if self.audio_config.get('enabled', True) and getattr(self.audio_capture, 'enabled', True):
+                logger.info("Audio capture enabled in config, but audio piping to ffmpeg is not implemented — starting without audio input")
 
             # Video encoding
             cmd += [
@@ -145,8 +144,10 @@ class StreamEncoder:
                 '-analyzeduration', '0',
             ]
 
-            # RTMP settings with MTU-friendly packet size
+            # RTMP/output settings with MTU-friendly packet size
+            # Place encoding/output-specific options before the output URL to avoid "not a decoding option" warnings
             cmd += [
+                '-bufsize', str(self.sbuffer_size),    # 50MB send buffer (output)
                 '-flvflags', 'no_duration_filesize',
                 '-packet_size', str(self.max_packet_size),
             ]
@@ -170,9 +171,15 @@ class StreamEncoder:
                 try:
                     for line in iter(proc.stderr.readline, b''):
                         try:
-                            logger.debug(f"ffmpeg: {line.decode().rstrip()}")
+                            text = line.decode(errors='replace').rstrip()
+                            logger.info(f"ffmpeg: {text}")
+                            try:
+                                with open('/tmp/birdstream_ffmpeg.log', 'a', encoding='utf-8') as _f:
+                                    _f.write(text + '\n')
+                            except Exception:
+                                pass
                         except Exception:
-                            logger.debug("ffmpeg: <non-decodable line>")
+                            logger.info("ffmpeg: <non-decodable line>")
                 except Exception as e:
                     logger.debug(f"FFmpeg stderr reader exited: {e}")
 

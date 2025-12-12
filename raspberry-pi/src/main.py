@@ -105,7 +105,7 @@ class BirdStreamApp:
             # Use explicit rtmp_port if present, otherwise fall back to legacy 'port'
             server_host = self.config['server'].get('host')
             server_rtmp_port = self.config['server'].get('rtmp_port', self.config['server'].get('port', 1935))
-            server_url = f"rtmp://{server_host}:{server_rtmp_port}/live"
+            server_url = f"rtmp://{server_host}:{server_rtmp_port}/live/live0"
             if not self.encoder.start(server_url):
                 logger.error("Failed to start encoder")
                 self.stop()

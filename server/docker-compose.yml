@@ -36,6 +36,7 @@ services:
     volumes:
       - ./nginx/nginx.conf:/usr/local/nginx/conf/nginx.conf:ro
       - ./nginx/logs:/var/log/nginx
+      - ./nginx/ffmpeg_wrapper.sh:/etc/nginx/ffmpeg_wrapper.sh:ro
     networks:
       - birdstream-net
     restart: unless-stopped

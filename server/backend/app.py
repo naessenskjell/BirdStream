@@ -25,6 +25,7 @@ from static_image_handler import StaticImageHandler
 from network_resilience import NetworkResilience, StreamState
 from settings_manager import SettingsManager
 from logger import StreamLogger, MetricsCollector, ConnectionStatistics
+from nginx_monitor import NginxMonitor
 
 # Configure logging
 logging.basicConfig(
@@ -34,7 +35,17 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Create Flask app with SocketIO
-app = Flask(__name__, static_folder='static', template_folder='static')
+# Resolve frontend/static directories so app works both in-container (where
+# Dockerfile copies frontend/ -> ./static/) and in-local-dev (where frontend
+# is at ../frontend). Prefer the repo `frontend` folder if present.
+BASE_DIR = Path(__file__).resolve().parent
+FRONTEND_DIR = BASE_DIR.parent / 'frontend'
+STATIC_DIR = BASE_DIR / 'static'
+
+if FRONTEND_DIR.exists():
+    app = Flask(__name__, static_folder=str(FRONTEND_DIR), template_folder=str(FRONTEND_DIR))
+else:
+    app = Flask(__name__, static_folder=str(STATIC_DIR), template_folder=str(STATIC_DIR))
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max upload
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'birdstream-dev-key')
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
@@ -48,6 +59,8 @@ network_resilience = NetworkResilience(
     youtube_rtmp=youtube_rtmp,
     static_images=static_image_handler
 )
+# Instantiate NginxMonitor (best-effort). It will probe common stat URLs
+nginx_monitor = NginxMonitor(stream_handler=stream_handler, network_resilience=network_resilience, metrics_collector=metrics_collector)
 settings_manager = SettingsManager()
 stream_logger = StreamLogger()
 metrics_collector = MetricsCollector()
@@ -417,6 +430,24 @@ def api_delete_image(image_id):
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+
+@app.route('/api/images/<image_id>/select', methods=['POST'])
+def api_select_image(image_id):
+    """Select an uploaded image to be used as static fallback."""
+    try:
+        success = static_image_handler.select_image(image_id)
+
+        if success:
+            stream_logger.log_event('INFO', 'images', f'Image selected: {image_id}')
+            return jsonify({'status': 'ok', 'message': f'Image {image_id} selected'}), 200
+        else:
+            return jsonify({'status': 'error', 'message': 'Image not found'}), 404
+
+    except Exception as e:
+        stream_logger.log_event('ERROR', 'images', f'Error selecting image: {str(e)}')
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 @app.route('/api/metrics', methods=['GET'])
 def api_metrics():
     """Get performance metrics."""
@@ -435,6 +466,25 @@ def api_metrics():
     except Exception as e:
         stream_logger.log_event('ERROR', 'metrics', f'Error getting metrics: {str(e)}')
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/preview', methods=['GET'])
+def api_preview():
+    """Return candidate preview HLS URLs for the current ingest."""
+    try:
+        host = request.host
+        # Candidate HLS paths produced by nginx+ffmpeg wrapper; return several guesses
+        candidates = [
+            f'http://{host}/live/live0_720p2628kbs.m3u8',
+            f'http://{host}/live/live0_720p2628kbs/index.m3u8',
+            f'http://{host}/live/live0_480p1128kbs.m3u8',
+            f'http://{host}/live/live0.m3u8',
+        ]
+
+        return jsonify({'candidates': candidates, 'timestamp': datetime.now().isoformat()})
+    except Exception as e:
+        stream_logger.log_event('ERROR', 'preview', f'Error building preview urls: {e}')
+        return jsonify({'candidates': [], 'error': str(e)}), 500
 
 
 @app.route('/api/debug', methods=['GET'])
@@ -525,6 +575,12 @@ if __name__ == '__main__':
         # Start monitoring
         network_resilience.start_monitoring()
         
+        # Start nginx monitor (best-effort)
+        try:
+            nginx_monitor.start()
+        except Exception:
+            logger.warning('Failed to start NginxMonitor')
+
         # Start broadcast thread for real-time updates
         start_broadcast_thread()
         
@@ -538,6 +594,10 @@ if __name__ == '__main__':
         stream_logger.log_event('INFO', 'shutdown', 'BirdStream server shutting down')
         stop_broadcast_thread()
         network_resilience.stop()
+        try:
+            nginx_monitor.stop()
+        except Exception:
+            pass
         stream_handler.close()
         youtube_rtmp.stop()
         static_image_handler.stop_streaming()

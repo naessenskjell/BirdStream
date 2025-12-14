@@ -214,6 +214,39 @@ class NetworkResilience:
             logger.error("Failed to start static image fallback")
             self.set_state(StreamState.ERROR, "Fallback startup failed")
             return False
+
+    def handle_stream_recovery(self) -> bool:
+        """
+        Trigger recovery action for a live stream: if an active ingest exists and
+        a YouTube stream key is configured, start publishing the ingest to YouTube.
+        Returns True if a publish was started or recovery initiated.
+        """
+        try:
+            conn = self.stream_handler.get_active_connection()
+            if not conn:
+                logger.warning("No active connection to recover/publish")
+                return False
+
+            # If YouTube is configured, attempt to publish
+            if self.youtube_rtmp and self.youtube_rtmp.get_stream_key():
+                # Common local RTMP source from nginx
+                source = 'rtmp://localhost:1935/live/live0'
+                success = self.youtube_rtmp.start_from_rtmp(source)
+                if success:
+                    self.set_state(StreamState.LIVE, 'Publishing to YouTube')
+                    logger.info('Publishing ingest to YouTube started')
+                    return True
+                else:
+                    logger.error('Failed to start YouTube publishing')
+                    return False
+
+            # Nothing to do; fall back to starting recovery monitor
+            self.start_recovery()
+            return True
+
+        except Exception as e:
+            logger.error(f"Error handling stream recovery: {e}")
+            return False
             
         except Exception as e:
             logger.error(f"Error starting fallback: {e}")

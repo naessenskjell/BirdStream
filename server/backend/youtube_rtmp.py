@@ -173,6 +173,63 @@ class YouTubeRTMP:
             self.last_error = str(e)
             self.errors += 1
             return False
+
+    def start_from_rtmp(self, rtmp_url: str) -> bool:
+        """
+        Start streaming to YouTube by pulling from an RTMP source (e.g., nginx ingest).
+
+        Args:
+            rtmp_url: RTMP source URL to pull from (e.g., rtmp://localhost:1935/live/live0)
+
+        Returns:
+            True if FFmpeg started successfully
+        """
+        if not self.stream_key:
+            logger.error("YouTube stream key not set")
+            return False
+
+        if self.is_streaming:
+            logger.warning("Already streaming to YouTube")
+            return True
+
+        try:
+            logger.info(f"Starting YouTube stream from RTMP source: {rtmp_url}")
+
+            # Pull from RTMP and forward to YouTube, copying codecs where possible
+            cmd = [
+                'ffmpeg',
+                '-i', rtmp_url,
+                '-c', 'copy',
+                '-f', 'flv',
+                f'{self.youtube_url}/{self.stream_key}',
+            ]
+
+            self.process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+            self.is_streaming = True
+            self.started_at = datetime.now()
+            self.frames_sent = 0
+
+            # Start monitoring thread
+            self.stream_thread = threading.Thread(
+                target=self._monitor_stream,
+                daemon=True
+            )
+            self.stream_thread.start()
+
+            logger.info("YouTube streaming (from RTMP) started")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to start YouTube stream from RTMP: {e}")
+            self.last_error = str(e)
+            self.errors += 1
+            return False
     
     def stop(self):
         """Stop streaming to YouTube."""

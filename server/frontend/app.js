@@ -36,6 +36,7 @@ const uiState = {
 document.addEventListener('DOMContentLoaded', function() {
     initializeUI();
     connectWebSocket();
+    initPreview();
 });
 
 /**
@@ -561,6 +562,55 @@ function fallbackToPoll() {
             .then(data => onStatusUpdate(data))
             .catch(error => logger.error(`Poll error: ${error.message}`));
     }, 2000);
+}
+
+/**
+ * Preview initialization: fetch candidate HLS URLs and attach player
+ */
+function initPreview() {
+    const container = document.getElementById('preview-container');
+    if (!container) return;
+
+    fetch('/api/preview')
+        .then(r => r.json())
+        .then(data => {
+            const candidates = data.candidates || [];
+            if (candidates.length === 0) {
+                container.innerHTML = '<p>No preview available</p>';
+                return;
+            }
+
+            // Create video element
+            const video = document.createElement('video');
+            video.id = 'preview-player';
+            video.controls = true;
+            video.width = 480;
+            video.height = 270;
+            container.appendChild(video);
+
+            const first = candidates[0];
+            if (window.Hls && Hls.isSupported()) {
+                const hls = new Hls();
+                hls.loadSource(first);
+                hls.attachMedia(video);
+                hls.on(Hls.Events.MANIFEST_PARSED, function() {
+                    // Autoplay muted preview
+                    video.muted = true;
+                    video.play().catch(() => {});
+                });
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                video.src = first;
+                video.addEventListener('loadedmetadata', function() {
+                    video.muted = true;
+                    video.play().catch(() => {});
+                });
+            } else {
+                container.innerHTML = '<p>Preview not supported in this browser</p>';
+            }
+        })
+        .catch(() => {
+            if (container) container.innerHTML = '<p>Preview unavailable</p>';
+        });
 }
 
 /**
